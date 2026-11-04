@@ -1,0 +1,142 @@
+"""Signal processing for the EEG widgets: display filters (notch + band-pass, the same
+defaults as the OpenBCI GUI: 60 Hz notch, 5-50 Hz... here 1-50 Hz), FFT / PSD, band
+powers and the GUI-style "railed" signal-quality check. numpy only."""
+from __future__ import annotations
+
+import math
+
+import numpy as np
+
+BANDS = {"delta": (1.0, 4.0), "theta": (4.0, 8.0), "alpha": (8.0, 13.0),
+         "beta": (13.0, 30.0), "gamma": (30.0, 50.0)}
+BAND_ORDER = list(BANDS)
+
+
+class Biquad:
+    """Direct-form-II-transposed biquad applied per channel with state (RBJ cookbook)."""
+
+    def __init__(self, b, a, n_ch: int):
+        self.b = np.asarray(b, float) / a[0]
+        self.a = np.asarray(a, float) / a[0]
+        self.z1 = np.zeros(n_ch)
+        self.z2 = np.zeros(n_ch)
+
+    @classmethod
+    def notch(cls, f0: float, fs: float, n_ch: int, q: float = 30.0):
+        w = 2 * math.pi * f0 / fs
+        alpha = math.sin(w) / (2 * q)
+        c = math.cos(w)
+        return cls([1, -2 * c, 1], [1 + alpha, -2 * c, 1 - alpha], n_ch)
+
+    @classmethod
+    def lowpass(cls, fc: float, fs: float, n_ch: int, q: float = 0.7071):
+        w = 2 * math.pi * fc / fs
+        alpha = math.sin(w) / (2 * q)
+        c = math.cos(w)
+        return cls([(1 - c) / 2, 1 - c, (1 - c) / 2], [1 + alpha, -2 * c, 1 - alpha], n_ch)
+
+    @classmethod
+    def highpass(cls, fc: float, fs: float, n_ch: int, q: float = 0.7071):
+        w = 2 * math.pi * fc / fs
+        alpha = math.sin(w) / (2 * q)
+        c = math.cos(w)
+        return cls([(1 + c) / 2, -(1 + c), (1 + c) / 2], [1 + alpha, -2 * c, 1 - alpha], n_ch)
+
+    def process(self, x: np.ndarray) -> np.ndarray:
+        """x [k, n_ch] -> y [k, n_ch]; keeps state between calls."""
+        b0, b1, b2 = self.b
+        _, a1, a2 = self.a
+        y = np.empty_like(x, dtype=float)
+        z1, z2 = self.z1, self.z2
+        for i in range(len(x)):
+            xi = x[i]
+            yi = b0 * xi + z1
+            z1 = b1 * xi - a1 * yi + z2
+            z2 = b2 * xi - a2 * yi
+            y[i] = yi
+        self.z1, self.z2 = z1, z2
+        return y
+
+
+class FilterChain:
+    """Notch (0 = off) + band-pass (two cascaded 2nd-order sections each side)."""
+
+    def __init__(self, fs: float, n_ch: int, notch_hz: float = 60.0,
+                 bp_lo: float = 1.0, bp_hi: float = 50.0):
+        self.fs, self.n_ch = fs, n_ch
+        self.notch_hz, self.bp_lo, self.bp_hi = notch_hz, bp_lo, bp_hi
+        self.stages = []
+        if notch_hz:
+            self.stages.append(Biquad.notch(notch_hz, fs, n_ch))
+            if 2 * notch_hz < fs / 2:
+                self.stages.append(Biquad.notch(2 * notch_hz, fs, n_ch))
+        if bp_lo:
+            self.stages += [Biquad.highpass(bp_lo, fs, n_ch, 0.5412), Biquad.highpass(bp_lo, fs, n_ch, 1.3066)]
+        if bp_hi and bp_hi < fs / 2:
+            self.stages += [Biquad.lowpass(bp_hi, fs, n_ch, 0.5412), Biquad.lowpass(bp_hi, fs, n_ch, 1.3066)]
+
+    def process(self, x: np.ndarray) -> np.ndarray:
+        y = np.asarray(x, float)
+        for s in self.stages:
+            y = s.process(y)
+        return y
+
+
+def psd(window: np.ndarray, fs: float) -> tuple[np.ndarray, np.ndarray]:
+    """Hann-windowed one-sided PSD (uV^2/Hz). window [n, n_ch] -> (freqs [m], P [m, n_ch])."""
+    n = len(window)
+    if n < 8:
+        return np.zeros(0), np.zeros((0, window.shape[1]))
+    x = window - window.mean(axis=0)
+    w = np.hanning(n)[:, None]
+    X = np.fft.rfft(x * w, axis=0)
+    scale = 1.0 / (fs * (w ** 2).sum())
+    P = (np.abs(X) ** 2) * scale
+    if n % 2 == 0:
+        P[1:-1] *= 2
+    else:
+        P[1:] *= 2
+    f = np.fft.rfftfreq(n, 1.0 / fs)
+    return f, P
+
+
+def band_powers(f: np.ndarray, P: np.ndarray) -> dict[str, np.ndarray]:
+    """Absolute power per band (uV^2) per channel, integrated from the PSD."""
+    out = {}
+    if len(f) == 0:
+        return {b: np.zeros(P.shape[1] if P.ndim == 2 else 0) for b in BANDS}
+    df = f[1] - f[0] if len(f) > 1 else 1.0
+    for name, (lo, hi) in BANDS.items():
+        m = (f >= lo) & (f < hi)
+        out[name] = P[m].sum(axis=0) * df
+    return out
+
+
+def relative_powers(abs_pow: dict[str, np.ndarray]) -> dict[str, np.ndarray]:
+    total = sum(abs_pow[b] for b in BANDS) + 1e-12
+    return {b: abs_pow[b] / total for b in BANDS}
+
+
+def quality(raw_window: np.ndarray, full_scale_uv: float) -> list[dict]:
+    """OpenBCI GUI-style per-channel signal check on RAW (unfiltered) data:
+    railed = |x| above 90 % of full scale for most of the window, near-railed above 75 %,
+    flat = no variation at all (open input / unplugged), else good."""
+    out = []
+    for c in range(raw_window.shape[1]):
+        x = raw_window[:, c]
+        if len(x) == 0:
+            out.append({"state": "unknown", "pct": 0.0, "std": 0.0})
+            continue
+        amax = np.abs(x).max()
+        pct = float(amax / full_scale_uv * 100.0)
+        std = float(x.std())
+        if pct >= 90:
+            st = "railed"
+        elif pct >= 75:
+            st = "near"
+        elif std < 0.05:
+            st = "flat"
+        else:
+            st = "good"
+        out.append({"state": st, "pct": round(pct, 1), "std": round(std, 2)})
+    return out

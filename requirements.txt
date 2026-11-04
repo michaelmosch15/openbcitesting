@@ -1,0 +1,6 @@
+# Runtime (pure Python wheels, no native DLLs beyond numpy's own)
+numpy>=1.26
+pyserial>=3.5
+
+# Optional: only for --band ble (direct Bluetooth to the band). Safe to leave installed.
+bleak>=0.22

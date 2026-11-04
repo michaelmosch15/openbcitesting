@@ -1,0 +1,45 @@
+{
+  "port": 8765,
+  "board": "auto",
+  "channels": "auto",
+  "source": "serial",
+  "udp_port": 12345,
+  "labels_8": ["Fp1", "Fp2", "C3", "C4", "P7", "P8", "O1", "O2"],
+  "labels_16": ["Fp1", "Fp2", "C3", "C4", "P7", "P8", "O1", "O2",
+                "F7", "F8", "F3", "F4", "T7", "T8", "P3", "P4"],
+  "daisy_even_is_upper": true,
+  "notch_hz": 60,
+  "bp_lo": 5.0,
+  "bp_hi": 50.0,
+  "epoch_s": 2.0,
+  "band_source": "supabase",
+  "supabase": {
+    "user_id": null,
+    "band": null,
+    "poll_s": 5,
+    "backfill_min": 30
+  },
+  "ble": {
+    "address": null,
+    "name_prefix": "BioProxal"
+  },
+  "usb": {
+    "port": null,
+    "bioproxal_tools_dir": "../worktrees/v0629/tools"
+  },
+  "flow_index": {
+    "theta": 0.5,
+    "alpha": 0.25,
+    "beta": 0.25,
+    "baseline_epochs": 150,
+    "warmup_epochs": 15
+  },
+  "pair_window_s": {
+    "supabase": 60,
+    "ble": 10,
+    "usb": 10,
+    "sim": 10
+  },
+  "history_hours": 4,
+  "open_browser": true
+}

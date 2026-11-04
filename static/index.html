@@ -1,0 +1,181 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>OpenBCI × BioProxal flow validation</title>
+<link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+
+<!-- ===== Top navigation bar (OpenBCI-GUI style) ===== -->
+<header id="nav">
+  <div class="nav-left">
+    <span class="nav-title">OpenBCI × BioProxal flow validation</span>
+    <button id="btnStream" class="btn btn-blue" title="Start / stop the Cyton stream">START STREAM</button>
+    <button id="btnRecord" class="btn btn-blue" title="Start / stop recording a session">RECORD</button>
+    <input id="recLabel" class="nav-input" type="text" maxlength="32" placeholder="label" pattern="[A-Za-z0-9_-]{0,32}" title="session label (A-Z a-z 0-9 _ -)">
+    <span id="recStatus" class="rec-status" hidden><span class="rec-dot"></span><span id="recElapsed">00:00</span><span id="recCounts" class="rec-counts"></span></span>
+    <label class="nav-ctl">Notch
+      <select id="selNotch"><option value="60">60 Hz</option><option value="50">50 Hz</option><option value="0">off</option></select>
+    </label>
+    <label class="nav-ctl">BP
+      <input id="bpLo" class="nav-input num" type="number" min="0" max="120" step="0.5" value="1" title="band-pass low cut (Hz)">–<input id="bpHi" class="nav-input num" type="number" min="1" max="125" step="0.5" value="50" title="band-pass high cut (Hz)"> Hz
+    </label>
+    <label class="nav-ctl">Window
+      <select id="selWindow"><option value="5">5 s</option><option value="10" selected>10 s</option><option value="20">20 s</option></select>
+    </label>
+    <label class="nav-ctl">Scale
+      <select id="selScale"><option value="auto" selected>auto</option><option value="50">50 µV</option><option value="100">100 µV</option><option value="200">200 µV</option><option value="400">400 µV</option><option value="1000">1000 µV</option></select>
+    </label>
+  </div>
+  <div class="nav-right">
+    <span id="chipConn" class="chip chip-warn">connecting to server…</span>
+    <span id="chipBoard" class="chip" title="board">board: —</span>
+    <span id="chipBand" class="chip" title="band link">band: —</span>
+    <span id="chipRec" class="chip" title="recorder">rec: idle</span>
+  </div>
+</header>
+
+<!-- ===== Widget grid ===== -->
+<main id="grid">
+
+  <!-- 1. TIME SERIES -->
+  <section class="widget" id="wTimeSeries">
+    <div class="widget-head"><span>Time series</span><span class="head-right" id="tsInfo">—</span></div>
+    <div class="widget-body body-fill"><canvas id="cvTs"></canvas></div>
+  </section>
+
+  <!-- 2. FFT PLOT -->
+  <section class="widget" id="wFft">
+    <div class="widget-head"><span>FFT plot</span><span class="head-right">µV²/Hz · log</span></div>
+    <div class="widget-body">
+      <canvas id="cvFft" class="cv-240"></canvas>
+      <div id="legendFft" class="legend"></div>
+    </div>
+  </section>
+
+  <!-- 3. BAND POWER -->
+  <section class="widget" id="wBand">
+    <div class="widget-head"><span>Band power</span>
+      <label class="head-right head-ctl"><input type="checkbox" id="chkBandLog"> log</label></div>
+    <div class="widget-body">
+      <canvas id="cvBand" class="cv-240"></canvas>
+      <div id="legendBand" class="legend"></div>
+    </div>
+  </section>
+
+  <!-- 4. HEAD PLOT -->
+  <section class="widget" id="wHead">
+    <div class="widget-head"><span>Head plot</span>
+      <label class="head-right head-ctl">relative
+        <select id="selHeadBand"><option value="delta">delta</option><option value="theta">theta</option><option value="alpha" selected>alpha</option><option value="beta">beta</option><option value="gamma">gamma</option></select>
+      </label></div>
+    <div class="widget-body head-body">
+      <div id="headSvgWrap"></div>
+      <div class="head-legend"><span id="headMin" class="muted">0</span><div class="ramp"></div><span id="headMax" class="muted">1</span></div>
+    </div>
+  </section>
+
+  <!-- 5. BIOPROXAL: FLOW + 6. BAND PANEL + 7. FELT FLOW -->
+  <div class="row-bpx">
+    <section class="widget" id="wFlow">
+      <div class="widget-head"><span>BioProxal: flow</span>
+        <span class="head-right head-ctl">
+          <label><input type="radio" name="flowRange" value="30" checked> last 30 min</label>
+          <label><input type="radio" name="flowRange" value="all"> whole session</label>
+          <button id="btnTable" class="btn btn-mini">validation table</button>
+        </span></div>
+      <div class="widget-body">
+        <div class="tiles-big">
+          <div class="tile-big"><div class="tile-label">Helmet (EEG) flow</div><div id="tileEeg" class="tile-num">—</div><div id="tileEegSub" class="tile-sub"></div></div>
+          <div class="tile-big"><div class="tile-label">Band flow</div><div id="tileBand" class="tile-num">—</div><div id="tileBandSub" class="tile-sub"></div></div>
+        </div>
+        <div class="legend" id="legendFlow">
+          <span class="lg"><i class="sw" style="background:#C77A00"></i>EEG flow index (2 s)</span>
+          <span class="lg"><i class="sw" style="background:#0B9C8F"></i>Band flow (step)</span>
+          <span class="lg"><i class="sw sw-dash" style="border-color:#0B9C8F"></i>band held</span>
+          <span class="lg"><i class="sw sw-mark"></i>felt flow</span>
+          <span class="lg"><i class="sw sw-vdash"></i>flow start / end / distracted</span>
+        </div>
+        <canvas id="cvFlow" class="cv-260"></canvas>
+        <div id="statsRow" class="stats-row">
+          <div class="tile"><div class="tile-label">pairs</div><div class="tile-val" id="stN">—</div></div>
+          <div class="tile"><div class="tile-label">r (95 % CI)</div><div class="tile-val" id="stR">—</div></div>
+          <div class="tile"><div class="tile-label">r last 5 min</div><div class="tile-val" id="stR5">—</div></div>
+          <div class="tile"><div class="tile-label">MAE</div><div class="tile-val" id="stMae">—</div></div>
+          <div class="tile"><div class="tile-label">band − EEG bias</div><div class="tile-val" id="stBias">—</div></div>
+          <div class="tile"><div class="tile-label">best lag (s) · r</div><div class="tile-val" id="stLag">—</div></div>
+          <div class="tile"><div class="tile-label">felt flow n · r band · r EEG</div><div class="tile-val" id="stFelt">—</div></div>
+          <div class="tile tile-lag"><div class="tile-label">r vs lag (s)</div><canvas id="cvLag"></canvas></div>
+        </div>
+        <div id="tableWrap" class="table-wrap" hidden>
+          <div class="table-tools"><span id="tableInfo" class="muted"></span><button id="btnTableRefresh" class="btn btn-mini">refresh</button></div>
+          <table id="pairsTable"><thead><tr><th>time</th><th>band flow</th><th>EEG flow</th><th>Δ band − EEG</th></tr></thead><tbody></tbody></table>
+        </div>
+      </div>
+    </section>
+
+    <div class="col-bpx">
+      <section class="widget" id="wBandPanel">
+        <div class="widget-head"><span>Band panel</span><span class="head-right" id="bpAge">—</span></div>
+        <div class="widget-body band-body">
+          <div class="band-flow"><span id="bpFlow" class="band-flow-num">—</span><span id="bpTags" class="tags"></span></div>
+          <dl class="kv">
+            <dt>mode</dt><dd id="bpMode">—</dd>
+            <dt>window</dt><dd id="bpWindow">—</dd>
+            <dt>heart rate</dt><dd id="bpHr">—</dd>
+            <dt>anomaly</dt><dd id="bpAnom">—</dd>
+            <dt>band</dt><dd id="bpName">—</dd>
+            <dt>source</dt><dd id="bpSource">—</dd>
+            <dt>link</dt><dd id="bpLink">—</dd>
+          </dl>
+          <div class="band-ctls">
+            <label>Source <select id="selSource"><option value="supabase">supabase</option><option value="ble">ble</option><option value="usb">usb</option><option value="sim">sim</option><option value="none">none</option></select></label>
+            <label id="wearerRow">Wearer <select id="selWearer"><option value="">— select —</option></select><button id="btnWearers" class="btn btn-mini" title="reload wearers">↻</button></label>
+            <div id="seenList" class="seen" hidden></div>
+          </div>
+        </div>
+      </section>
+
+      <section class="widget" id="wFelt">
+        <div class="widget-head"><span>Felt flow</span><span class="head-right" id="feltVal">0.50</span></div>
+        <div class="widget-body felt-body">
+          <div class="felt-row"><input id="feltSlider" type="range" min="0" max="1" step="0.05" value="0.5"><button id="btnFelt" class="btn btn-blue">Rate now</button></div>
+          <div class="felt-row">
+            <button class="btn" data-mark="flow_start">Flow started</button>
+            <button class="btn" data-mark="flow_end">Flow ended</button>
+            <button class="btn" data-mark="distracted">Distracted</button>
+          </div>
+          <div class="felt-row"><input id="noteText" type="text" placeholder="note…" maxlength="200"><button id="btnNote" class="btn">Note</button></div>
+          <div id="markLog" class="mark-log muted"></div>
+        </div>
+      </section>
+    </div>
+  </div>
+
+  <!-- 8. SESSIONS -->
+  <details class="widget" id="wSessions">
+    <summary class="widget-head"><span>Sessions</span><span class="head-right" id="sessCount"></span></summary>
+    <div class="widget-body">
+      <div class="table-tools"><span class="muted">recorded under sessions/</span><button id="btnSessionsRefresh" class="btn btn-mini">refresh</button></div>
+      <table id="sessionsTable"><thead><tr><th>name</th><th>epochs</th><th>band</th><th>marks</th><th>report</th><th></th></tr></thead><tbody></tbody></table>
+    </div>
+  </details>
+
+</main>
+
+<!-- shared hover tooltip -->
+<div id="tooltip" class="tooltip" hidden></div>
+
+<!-- report modal -->
+<div id="modal" class="modal" hidden>
+  <div class="modal-box">
+    <div class="modal-head"><span id="modalTitle">Report</span><button id="modalClose" class="btn btn-mini">close</button></div>
+    <div id="modalBody" class="modal-body md"></div>
+  </div>
+</div>
+
+<script src="/static/app.js"></script>
+</body>
+</html>

@@ -1,0 +1,14 @@
+# Recordings: raw EEG and wrist data of real people, stay local
+sessions/
+sessions/**/report.md
+sessions/**/report.json
+
+# Python
+__pycache__/
+*.pyc
+.venv/
+.pytest_cache/
+
+# Credentials (they live in %USERPROFILE%\.bioproxal\, never here)
+*.env
+*.key
