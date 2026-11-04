@@ -293,9 +293,28 @@ class SimBoard:
         self.log = log
         self.log(f"[sim] synthetic {n_ch}-ch board at {self.fs:.0f} Hz")
 
+    # what each protocol condition does to the simulated person's flow (set_condition);
+    # without a protocol the hidden state just drifts slowly
+    CONDITION_FLOW = {"rest": 0.40, "pause": 0.40, "boredom": 0.25, "flow": 0.85, "overload": 0.30, "work": 0.60}
+
+    def set_condition(self, condition: str | None) -> None:
+        self._cond_target = self.CONDITION_FLOW.get(condition or "", None)
+        self._cond_t = time.time()
+
     def hidden_flow(self, t: float | None = None) -> float:
-        t = (time.time() if t is None else t) - self._t0
-        return 0.5 + 0.35 * math.sin(2 * math.pi * t / 240.0) + 0.1 * math.sin(2 * math.pi * t / 53.0)
+        t = time.time() if t is None else t
+        tt = t - self._t0
+        drift = 0.5 + 0.35 * math.sin(2 * math.pi * tt / 240.0) + 0.1 * math.sin(2 * math.pi * tt / 53.0)
+        target = getattr(self, "_cond_target", None)
+        if target is None:
+            return drift
+        # ease from the previous level into the condition's level over ~20 s
+        k = min(1.0, max(0.0, (t - getattr(self, "_cond_t", t)) / 20.0))
+        prev = getattr(self, "_cond_prev", drift)
+        level = prev + (target - prev) * k
+        if k >= 1.0:
+            self._cond_prev = target
+        return level + 0.06 * math.sin(2 * math.pi * tt / 37.0)
 
     def start(self) -> None:
         if self.streaming:

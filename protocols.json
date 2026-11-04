@@ -1,0 +1,63 @@
+{
+  "difficulty_ladder": {
+    "title": "Difficulty ladder (boredom / flow / overload), 2 rounds",
+    "description": "Katahira et al. 2018 / Ewing et al. 2016 paradigm: the same mental-arithmetic task at three difficulty levels, 6-min blocks, two rounds, counterbalanced. Flow is expected only in the matched-difficulty block. About 47 min.",
+    "blocks": [
+      {"condition": "rest", "label": "Rest, eyes open", "duration_s": 180, "baseline": true,
+       "instruction": "Sit still, eyes open, look at the fixation dot. Breathe normally. This is the EEG baseline."},
+      {"condition": "rest_ec", "label": "Rest, eyes closed", "duration_s": 60, "baseline": false,
+       "instruction": "Close your eyes and sit still until you hear nothing new for a minute. (Alpha reactivity check.)"},
+      {"shuffle": [
+        {"condition": "boredom", "label": "Easy arithmetic", "duration_s": 360, "task": "arithmetic_easy", "rating": true,
+         "instruction": "Answer the sums. They are deliberately trivial and slow."},
+        {"condition": "flow", "label": "Matched arithmetic", "duration_s": 360, "task": "arithmetic_adaptive", "rating": true,
+         "instruction": "Answer as fast and accurately as you can. Difficulty adapts to keep you at about 80 % correct."},
+        {"condition": "overload", "label": "Overload arithmetic", "duration_s": 360, "task": "arithmetic_hard", "rating": true,
+         "instruction": "Answer as fast as you can. The problems are too hard on purpose; keep trying."}
+       ],
+       "repeat": 2,
+       "between": {"condition": "pause", "label": "Pause", "duration_s": 60,
+                   "instruction": "Rate the block, then relax. The next block starts automatically."}
+      },
+      {"condition": "rest", "label": "Rest, eyes open", "duration_s": 120, "baseline": false,
+       "instruction": "Sit still, eyes open. Done after this."}
+    ]
+  },
+  "sim_quick": {
+    "title": "Quick simulator check (about 9 min)",
+    "description": "Shortened difficulty ladder for bench checks with --sim: 60 s rest, two rounds of three 60 s blocks, 20 s pauses.",
+    "blocks": [
+      {"condition": "rest", "label": "Rest, eyes open", "duration_s": 60, "baseline": true,
+       "instruction": "Sit still, eyes open, look at the dot."},
+      {"shuffle": [
+        {"condition": "boredom", "label": "Easy arithmetic", "duration_s": 60, "task": "arithmetic_easy", "rating": true,
+         "instruction": "Answer the sums."},
+        {"condition": "flow", "label": "Matched arithmetic", "duration_s": 60, "task": "arithmetic_adaptive", "rating": true,
+         "instruction": "Answer as fast and accurately as you can."},
+        {"condition": "overload", "label": "Overload arithmetic", "duration_s": 60, "task": "arithmetic_hard", "rating": true,
+         "instruction": "Answer as fast as you can."}
+       ],
+       "repeat": 2,
+       "between": {"condition": "pause", "label": "Pause", "duration_s": 20, "instruction": "Rate the block, then relax."}
+      },
+      {"condition": "rest", "label": "Rest, eyes open", "duration_s": 30, "instruction": "Sit still, eyes open."}
+    ]
+  },
+  "free_work": {
+    "title": "Free work with ratings every 5 min",
+    "description": "3 min rest baseline, then 40 min of your own focused work with a flow rating prompt every 5 min. For ecological checks, not for the primary gate.",
+    "blocks": [
+      {"condition": "rest", "label": "Rest, eyes open", "duration_s": 180, "baseline": true,
+       "instruction": "Sit still, eyes open, look at the fixation dot."},
+      {"condition": "work", "label": "Work 1", "duration_s": 300, "rating": true, "instruction": "Work on your own task."},
+      {"condition": "work", "label": "Work 2", "duration_s": 300, "rating": true, "instruction": "Work on your own task."},
+      {"condition": "work", "label": "Work 3", "duration_s": 300, "rating": true, "instruction": "Work on your own task."},
+      {"condition": "work", "label": "Work 4", "duration_s": 300, "rating": true, "instruction": "Work on your own task."},
+      {"condition": "work", "label": "Work 5", "duration_s": 300, "rating": true, "instruction": "Work on your own task."},
+      {"condition": "work", "label": "Work 6", "duration_s": 300, "rating": true, "instruction": "Work on your own task."},
+      {"condition": "work", "label": "Work 7", "duration_s": 300, "rating": true, "instruction": "Work on your own task."},
+      {"condition": "work", "label": "Work 8", "duration_s": 300, "rating": true, "instruction": "Work on your own task."},
+      {"condition": "rest", "label": "Rest, eyes open", "duration_s": 120, "instruction": "Sit still, eyes open."}
+    ]
+  }
+}

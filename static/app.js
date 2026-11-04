@@ -6,6 +6,8 @@
  *   helpers    - DOM, formatting, canvas DPR fitting, tooltip, POST /api/cmd
  *   widgets    - TimeSeries, FFTPlot, BandPower, HeadPlot, FlowChart, LagPlot, StatsTiles,
  *                BandPanel, FeltFlow, Sessions, NavBar - each with update(...) and/or draw()
+ *   experiment - makeProblem/mulberry32 (pure), taskRunner (arithmetic task, posts `trial`),
+ *                experiment (protocol widget), ratingDialog (Flow Short Scale, posts `rating`)
  *   sse        - EventSource with reconnect backoff
  */
 'use strict';
@@ -26,6 +28,34 @@ const RAMP_LO = [0xD3, 0xE9, 0xE2]; // light mint
 const RAMP_HI = [0x0A, 0x58, 0x53]; // dark teal
 const MAX_WINDOW_S = 20;
 const HISTORY_MAX_S = 4 * 3600;
+// experiment protocol (docs/API.md "Experiment protocol and task (v0.2)")
+const COND_COLORS = { rest: '#7A8FA6', pause: '#B0B0B0', boredom: '#8AB4F8', flow: '#0B9C8F', overload: '#C77A00', work: '#6C5CE7' };
+const COND_SHORT = { rest: 'rest', pause: 'pause', boredom: 'bored', flow: 'flow', overload: 'over', work: 'work' };
+const condColor = (c) => COND_COLORS[c] || '#999999';
+// task modes: pace_ms = fixed problem cadence with the input disabled after the answer (easy);
+// limit_ms = per-problem time limit, a timeout counts as wrong (adaptive soft 10 s, hard 6 s)
+const TASK_CFG = {
+  arithmetic_easy: { pace_ms: 4000, limit_ms: null, start_level: 1, staircase: false },
+  arithmetic_adaptive: { pace_ms: null, limit_ms: 10000, start_level: 4, staircase: true },
+  arithmetic_hard: { pace_ms: null, limit_ms: 6000, start_level: 12, staircase: false },
+};
+// Flow Short Scale (Rheinberg, Vollmeyer & Engeser 2003), 7-point; wording from docs/API.md
+const FSS_ITEMS = [
+  ['challenge', 'I feel just the right amount of challenge'],
+  ['fluent', 'My thoughts/activities run fluidly and smoothly'],
+  ['time', "I don't notice time passing"],
+  ['concentrate', 'I have no difficulty concentrating'],
+  ['clear', 'My mind is completely clear'],
+  ['absorbed', 'I am totally absorbed in what I am doing'],
+  ['automatic', 'The right thoughts/movements occur of their own accord'],
+  ['know', 'I know what I have to do each step of the way'],
+  ['control', 'I feel that I have everything under control'],
+  ['lost', 'I am completely lost in thought'],
+];
+const FSS_DEMAND = [['1', 'too low'], ['2', 'just right'], ['3', 'too high']];
+// mark kinds that are drawn as block shading / rating squares, or not drawn at all
+const MARK_BLOCK = new Set(['block_start', 'block_end']);
+const MARK_HIDDEN = new Set(['trial']);
 
 // ----------------------------------------------------------------------------
 // Store
@@ -54,6 +84,7 @@ const store = {
   wearers: [],
   sessions: [],
   lastAnalysisT: null,
+  protocol: null,       // status.protocol (null until the server reports one); patched by event: protocol
 };
 
 // ----------------------------------------------------------------------------
@@ -91,6 +122,28 @@ function chEnabled(i) { return store.enabled.length > i ? !!store.enabled[i] : t
 function lerpColor(a, b, t) {
   const c = a.map((x, i) => Math.round(x + (b[i] - x) * clamp(t, 0, 1)));
   return 'rgb(' + c.join(',') + ')';
+}
+/** '#RRGGBB' -> 'rgba(r,g,b,a)' */
+function hexA(hex, a) {
+  const m = /^#?([0-9a-f]{2})([0-9a-f]{2})([0-9a-f]{2})$/i.exec(String(hex));
+  if (!m) return 'rgba(153,153,153,' + a + ')';
+  return 'rgba(' + parseInt(m[1], 16) + ',' + parseInt(m[2], 16) + ',' + parseInt(m[3], 16) + ',' + a + ')';
+}
+/** Protocol blocks as [{t0, t1, cond}] from block_start / block_end marks (an open block runs to tEnd). */
+function blockBands(marks, tEnd) {
+  const out = [];
+  let open = null;
+  for (const m of marks) {
+    const t = m[0], kind = m[1];
+    if (kind === 'block_start') {
+      if (open) { open.t1 = t; out.push(open); }
+      open = { t0: t, t1: null, cond: typeof m[2] === 'string' ? m[2] : String(m[2] == null ? '' : m[2]) };
+    } else if (kind === 'block_end' || kind === 'protocol_stop' || kind === 'protocol_end') {
+      if (open) { open.t1 = t; out.push(open); open = null; }
+    }
+  }
+  if (open) { open.t1 = tEnd; out.push(open); }
+  return out;
 }
 
 /** Fit a canvas to its CSS box using devicePixelRatio; returns css size + ctx with DPR transform. */
@@ -592,6 +645,19 @@ class FlowChart {
     const { tStart, tEnd } = this.range();
     const xOf = (t) => p.l + ((t - tStart) / (tEnd - tStart)) * pw;
     const yOf = (v) => p.t + (1 - clamp(v, 0, 1)) * ph;
+    // protocol block shading (behind everything): translucent band in the condition colour + tiny label
+    const bands = blockBands(store.marks, tEnd);
+    ctx.font = '9px "Segoe UI", system-ui, sans-serif'; ctx.textAlign = 'left'; ctx.textBaseline = 'top';
+    for (const bd of bands) {
+      if (bd.t1 < tStart || bd.t0 > tEnd) continue;
+      const x0 = xOf(Math.max(bd.t0, tStart)), x1 = xOf(Math.min(bd.t1, tEnd));
+      ctx.fillStyle = hexA(condColor(bd.cond), 0.16);
+      ctx.fillRect(x0, p.t, Math.max(1, x1 - x0), ph);
+      ctx.fillStyle = hexA(condColor(bd.cond), 0.9);
+      ctx.fillRect(x0, p.t, Math.max(1, x1 - x0), 2);
+      if (x1 - x0 > 26) { ctx.fillStyle = INK2; ctx.fillText(bd.cond, x0 + 2, p.t + 3); }
+    }
+    ctx.font = '11px "Segoe UI", system-ui, sans-serif';
     // grid y
     ctx.strokeStyle = GRID; ctx.lineWidth = 1; ctx.fillStyle = INK2; ctx.textAlign = 'right'; ctx.textBaseline = 'middle';
     for (let i = 0; i <= 4; i++) { const v = i / 4, y = Math.round(yOf(v)) + 0.5; ctx.beginPath(); ctx.moveTo(p.l, y); ctx.lineTo(p.l + pw, y); ctx.stroke(); ctx.fillText(v.toFixed(2), p.l - 4, y); }
@@ -635,8 +701,13 @@ class FlowChart {
     for (const m of store.marks) {
       const t = m[0], kind = m[1], val = m[2];
       if (t < tStart || t > tEnd) continue;
+      if (MARK_HIDDEN.has(kind) || MARK_BLOCK.has(kind)) continue;   // trials are too dense; blocks are the shading
       const x = Math.round(xOf(t)) + 0.5;
-      if (kind === 'felt_flow') {
+      if (kind === 'rating') {
+        // small square marker at the top of the chart
+        ctx.fillStyle = '#555'; ctx.fillRect(x - 3.5, p.t + 1, 7, 7);
+        ctx.strokeStyle = '#fff'; ctx.lineWidth = 1; ctx.strokeRect(x - 3.5, p.t + 1, 7, 7); ctx.lineWidth = 2;
+      } else if (kind === 'felt_flow') {
         ctx.strokeStyle = '#555'; ctx.setLineDash([]);
         ctx.beginPath(); ctx.moveTo(x, p.t); ctx.lineTo(x, p.t + ph); ctx.stroke();
         const v = typeof val === 'number' ? val : parseFloat(val);
@@ -644,9 +715,11 @@ class FlowChart {
       } else {
         ctx.strokeStyle = '#777'; ctx.setLineDash([4, 3]);
         ctx.beginPath(); ctx.moveTo(x, p.t); ctx.lineTo(x, p.t + ph); ctx.stroke(); ctx.setLineDash([]);
-        ctx.fillStyle = INK2; ctx.font = '9px "Segoe UI", system-ui, sans-serif'; ctx.textAlign = 'left'; ctx.textBaseline = 'top';
-        const lab = kind === 'flow_start' ? 'start' : kind === 'flow_end' ? 'end' : kind === 'distracted' ? 'distr.' : (kind === 'note' ? 'note' : String(kind));
-        ctx.fillText(lab, x + 2, p.t + 1);
+        // dashed-line labels sit at the BOTTOM of the plot; the top row belongs to the block-shading condition labels
+        ctx.fillStyle = INK2; ctx.font = '9px "Segoe UI", system-ui, sans-serif'; ctx.textAlign = 'left'; ctx.textBaseline = 'bottom';
+        const lab = kind === 'flow_start' ? 'start' : kind === 'flow_end' ? 'end' : kind === 'distracted' ? 'distr.' : kind === 'note' ? 'note'
+          : kind === 'protocol_start' ? 'p.start' : kind === 'protocol_stop' ? 'p.stop' : kind === 'protocol_end' ? 'p.end' : String(kind);
+        ctx.fillText(lab, x + 2, p.t + ph - 1);
         ctx.font = '11px "Segoe UI", system-ui, sans-serif';
       }
     }
@@ -720,13 +793,50 @@ const statsTiles = {
     $('stLag').textContent = isNum(s.best_lag_s) ? (s.best_lag_s > 0 ? '+' : '') + s.best_lag_s + ' s · r ' + fmt(s.r_at_best_lag) : '—';
     const f = s.felt || {};
     $('stFelt').textContent = isNum(f.n) ? f.n + ' · ' + fmt(f.r_band) + ' · ' + fmt(f.r_eeg) : '—';
+    this.renderConditions(s);
     // big tiles
     const fe = a && a.flow_eeg;
-    $('tileEeg').textContent = fe && isNum(fe.flow_eeg) ? fe.flow_eeg.toFixed(2) : '—';
-    $('tileEegSub').textContent = fe ? (fe.baseline_ready === false ? 'learning baseline…' : (isNum(fe.n_good) ? fe.n_good + ' good channels' : '')) : (store.connected ? 'no epoch yet' : '');
+    if (fe && isNum(fe.flow_eeg)) store.lastEegFlow = fe.flow_eeg;
+    const artifact = !!(fe && fe.artifact && !isNum(fe.flow_eeg));
+    // during an artifact epoch keep the last clean value on screen and tag it; "no index" if there never was one
+    const shown = fe && isNum(fe.flow_eeg) ? fe.flow_eeg : (artifact && isNum(store.lastEegFlow) ? store.lastEegFlow : null);
+    $('tileEeg').textContent = isNum(shown) ? shown.toFixed(2) : '—';
+    const tagHtml = artifact ? '<span class="tag warn">' + (isNum(store.lastEegFlow) ? 'artifact' : 'no index') + '</span> ' : '';
+    const segs = fe && isNum(fe.n_segments_used) ? fe.n_segments_used + '/5 clean segments' : '';
+    const base = fe ? (fe.baseline_ready === false ? 'learning baseline…' : (isNum(fe.n_good) ? fe.n_good + ' good channels' : '')) : (store.connected ? 'no epoch yet' : '');
+    $('tileEegSub').innerHTML = tagHtml + esc([base, segs].filter(Boolean).join(' · '));
     const b = store.band;
     $('tileBand').textContent = b && isNum(b.flow) ? b.flow.toFixed(2) : '—';
     $('tileBandSub').textContent = b ? [b.held ? 'held' : '', b.settling ? 'settling' : '', isNum(b.age_s) ? fmtAge(b.age_s) + ' ago' : ''].filter(Boolean).join(' · ') : 'no band sample';
+  },
+  /** Per-condition mini table from analysis.stats.blocks: {rows, conditions:[...], ordering, block_rho, n_blocks}
+   *  (fallbacks: {blocks:[...]} or the bare per-condition array with stats.ordering). */
+  renderConditions(s) {
+    let rows = [], ord = null, rho = null, nb = null;
+    if (s) {
+      const b = s.blocks;
+      if (Array.isArray(b)) { rows = b; ord = s.ordering || null; }
+      else if (b && typeof b === 'object') {
+        rows = Array.isArray(b.conditions) ? b.conditions : Array.isArray(b.blocks) ? b.blocks : [];
+        ord = b.ordering || s.ordering || null;
+        rho = isNum(b.block_rho) ? b.block_rho : null;
+        nb = isNum(b.n_blocks) ? b.n_blocks : null;
+      }
+    }
+    let foot = $('condRho');
+    if (!foot) { foot = document.createElement('div'); foot.id = 'condRho'; foot.className = 'cond-ordering'; $('condOrdering').after(foot); }
+    foot.textContent = 'block-level Spearman ρ = ' + (rho == null ? '—' : fmt(rho)) + ' over ' + (nb == null ? '—' : nb) + ' blocks';
+    const conds = ['boredom', 'flow', 'overload'];
+    for (const r of rows) if (r && typeof r.condition === 'string' && !conds.includes(r.condition)) conds.push(r.condition);
+    const html = conds.map((c) => {
+      const r = rows.find((x) => x && x.condition === c) || {};
+      return '<tr><td><i class="sw" style="background:' + condColor(c) + '"></i>' + esc(c) + '</td><td class="num">' + (isNum(r.n_blocks) ? r.n_blocks : '—')
+        + '</td><td class="num">' + fmt(r.eeg_mean) + '</td><td class="num">' + fmt(r.band_mean) + '</td><td class="num">' + fmt(r.fss_mean, 1) + '</td></tr>';
+    }).join('');
+    const tb = $('condTable').querySelector('tbody');
+    if (tb.innerHTML !== html) tb.innerHTML = html;
+    const o = ord || {};
+    $('condOrdering').textContent = 'ordering · EEG ' + (o.eeg || '—') + ' · band ' + (o.band || '—') + ' · FSS ' + (o.fss || '—');
   },
 };
 
@@ -832,6 +942,7 @@ const feltFlow = {
     $('noteText').addEventListener('keydown', (e) => { if (e.key === 'Enter') $('btnNote').click(); });
   },
   log(m) {
+    if (MARK_HIDDEN.has(m.kind)) return;   // one trial every few seconds would flush the real marks out of the log
     const el = $('markLog');
     const line = document.createElement('div');
     line.textContent = fmtClock(m.t, true) + ' · ' + m.kind + (m.value != null && m.value !== '' ? ' ' + (isNum(m.value) ? m.value.toFixed(2) : m.value) : '') + (m.note ? ' · ' + m.note : '');
@@ -969,6 +1080,344 @@ function buildLegends() {
 }
 
 // ----------------------------------------------------------------------------
+// Experiment: seeded RNG + arithmetic problem generator (pure)
+// ----------------------------------------------------------------------------
+/** mulberry32: small seeded PRNG, returns a function giving floats in [0, 1). */
+function mulberry32(seed) {
+  let a = seed >>> 0;
+  return function () {
+    a = (a + 0x6D2B79F5) >>> 0;
+    let t = a;
+    t = Math.imul(t ^ (t >>> 15), t | 1);
+    t ^= t + Math.imul(t ^ (t >>> 7), t | 61);
+    return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+  };
+}
+
+/**
+ * makeProblem(level, rng) -> {text, answer, level}; text is ASCII ("12 * 34", "81 - 27") and is what gets logged.
+ * L1 a+b (1..9) · L2 a+b (10..99, 1..9) · L3 a+b (10..99 both) · L4 a-b (10..99, a>=b) · L5 mixed +/- two-digit
+ * L6 a*b (10..99, 2..9) · L7 a*b+c (10..99, 2..9, +10..99) · L8 a+b+c two-digit · L9 three-digit add/sub
+ * L10 a*b (10..99, 10..19) · L11 a*b (10..99, 10..29) · L12 a*b (10..99 both) or three-digit + three-digit + two-digit
+ */
+function makeProblem(level, rng) {
+  const ri = (lo, hi) => lo + Math.floor(rng() * (hi - lo + 1));
+  const add = (a, b) => ({ text: a + ' + ' + b, answer: a + b });
+  const sub = (a, b) => (a >= b ? { text: a + ' - ' + b, answer: a - b } : { text: b + ' - ' + a, answer: b - a });
+  const mul = (a, b) => ({ text: a + ' * ' + b, answer: a * b });
+  const add3 = (a, b, c) => ({ text: a + ' + ' + b + ' + ' + c, answer: a + b + c });
+  const L = clamp(Math.round(level) || 1, 1, 12);
+  let p;
+  switch (L) {
+    case 1: p = add(ri(1, 9), ri(1, 9)); break;
+    case 2: p = add(ri(10, 99), ri(1, 9)); break;
+    case 3: p = add(ri(10, 99), ri(10, 99)); break;
+    case 4: p = sub(ri(10, 99), ri(10, 99)); break;
+    case 5: p = rng() < 0.5 ? add(ri(10, 99), ri(10, 99)) : sub(ri(10, 99), ri(10, 99)); break;
+    case 6: p = mul(ri(10, 99), ri(2, 9)); break;
+    case 7: { const a = ri(10, 99), b = ri(2, 9), c = ri(10, 99); p = { text: a + ' * ' + b + ' + ' + c, answer: a * b + c }; break; }
+    case 8: p = add3(ri(10, 99), ri(10, 99), ri(10, 99)); break;
+    case 9: p = rng() < 0.5 ? add(ri(100, 999), ri(100, 999)) : sub(ri(100, 999), ri(100, 999)); break;
+    case 10: p = mul(ri(10, 99), ri(10, 19)); break;
+    case 11: p = mul(ri(10, 99), ri(10, 29)); break;
+    default: p = rng() < 0.5 ? mul(ri(10, 99), ri(10, 99)) : add3(ri(100, 999), ri(100, 999), ri(10, 99));
+  }
+  p.level = L;
+  return p;
+}
+const problemDisplay = (text) => String(text).replace(/ - /g, ' − ').replace(/\*/g, '×');
+
+// ----------------------------------------------------------------------------
+// Experiment: task runner (one problem at a time, Enter submits, posts `trial`)
+// ----------------------------------------------------------------------------
+const taskRunner = {
+  active: false, awaiting: false, task: null, cfg: null, blockIndex: null, rng: null,
+  level: 1, streak: 0, trials: 0, correct: 0, rts: [], problem: null, t0: 0,
+  timer: null, paceTimer: null, barTimer: null,
+  init() {
+    $('taskInput').addEventListener('keydown', (e) => { if (e.key === 'Enter') { e.preventDefault(); this.submit(); } });
+  },
+  /** Start the task of a block view ({block_index, task, ...}); sequences are reproducible from order_seed + block index. */
+  start(block, orderSeed) {
+    this.stop();
+    const task = block && block.task, cfg = task ? TASK_CFG[task] : null;
+    if (!cfg) return;
+    this.task = task; this.cfg = cfg; this.blockIndex = isNum(block.block_index) ? block.block_index : 0;
+    this.level = cfg.start_level; this.streak = 0; this.trials = 0; this.correct = 0; this.rts = [];
+    const seed = (((isNum(orderSeed) ? orderSeed : 0) | 0) + this.blockIndex * 1000003) >>> 0;
+    this.rng = mulberry32(seed);
+    this.active = true;
+    $('taskArith').hidden = false;
+    this.next();
+  },
+  stop() {
+    this.active = false; this.awaiting = false;
+    clearTimeout(this.timer); clearTimeout(this.paceTimer); clearInterval(this.barTimer);
+    this.timer = this.paceTimer = this.barTimer = null;
+    this.problem = null; this.task = null; this.cfg = null; this.blockIndex = null;
+    const inp = $('taskInput'); inp.disabled = true; inp.value = '';
+    $('taskArith').hidden = true;
+    $('taskFlash').textContent = ''; $('taskFlash').className = 'task-flash';
+    $('taskTimeFill').style.width = '0%';
+    experiment.renderStats();
+  },
+  next() {
+    if (!this.active) return;
+    this.problem = makeProblem(this.level, this.rng);
+    $('taskProblem').textContent = problemDisplay(this.problem.text);
+    const inp = $('taskInput');
+    inp.disabled = false; inp.value = '';
+    if (!ratingDialog.isOpen) inp.focus();
+    $('taskFlash').textContent = ''; $('taskFlash').className = 'task-flash';
+    this.t0 = performance.now(); this.awaiting = true;
+    clearTimeout(this.timer); clearInterval(this.barTimer); this.timer = this.barTimer = null;
+    const lim = this.cfg.limit_ms, pace = this.cfg.pace_ms;
+    if (lim) this.timer = setTimeout(() => this.timeout(), lim);
+    // thin per-problem time bar: drains over the limit, or fills over the pacing interval (easy)
+    const span = lim || pace || 0, fill = $('taskTimeFill');
+    fill.style.width = lim ? '100%' : '0%';
+    if (span) this.barTimer = setInterval(() => {
+      const f = clamp((performance.now() - this.t0) / span, 0, 1);
+      fill.style.width = ((lim ? 1 - f : f) * 100).toFixed(1) + '%';
+    }, 50);
+    experiment.renderStats();
+  },
+  submit() {
+    if (!this.active || !this.awaiting) return;
+    const raw = $('taskInput').value.trim();
+    if (raw === '') return;
+    const n = parseInt(raw.replace(/[^0-9-]/g, ''), 10);
+    this.finish(raw, Number.isFinite(n) && n === this.problem.answer, performance.now() - this.t0, false);
+  },
+  timeout() { if (this.active && this.awaiting) this.finish('', false, this.cfg.limit_ms, true); },
+  finish(response, correct, rtMs, timedOut) {
+    this.awaiting = false;
+    clearTimeout(this.timer); this.timer = null;
+    $('taskInput').disabled = true;
+    const p = this.problem;
+    this.trials++; if (correct) this.correct++; if (!timedOut) this.rts.push(rtMs);
+    const fl = $('taskFlash'); fl.textContent = correct ? '✓' : '✗'; fl.className = 'task-flash ' + (correct ? 'ok' : 'bad');
+    cmd('trial', { block_index: this.blockIndex, task: this.task, level: p.level, problem: p.text, answer: p.answer,
+      response, correct: !!correct, rt_ms: Math.round(rtMs), t: Date.now() / 1000 });
+    // staircase (adaptive only): 2 correct in a row -> level up, 1 wrong (or timeout) -> level down
+    if (this.cfg.staircase) {
+      if (correct) { this.streak++; if (this.streak >= 2) { this.level = Math.min(12, this.level + 1); this.streak = 0; } }
+      else { this.level = Math.max(1, this.level - 1); this.streak = 0; }
+    }
+    experiment.renderStats();
+    const pace = this.cfg.pace_ms;
+    if (!pace) { clearInterval(this.barTimer); this.barTimer = null; }
+    // easy: next problem only when 4 s have passed since this one appeared; others: after a short feedback flash
+    const delay = pace ? Math.max(pace - (performance.now() - this.t0), 600) : 350;
+    clearTimeout(this.paceTimer);
+    this.paceTimer = setTimeout(() => this.next(), delay);
+  },
+  stats() {
+    const s = this.rts.slice().sort((a, b) => a - b), n = s.length;
+    const med = n ? (n % 2 ? s[(n - 1) / 2] : (s[n / 2 - 1] + s[n / 2]) / 2) : null;
+    return { level: this.level, trials: this.trials, acc: this.trials ? this.correct / this.trials : null, medRt: med };
+  },
+};
+
+// ----------------------------------------------------------------------------
+// Experiment: widget (protocol controls, block strip, participant view, stats, rating status)
+// ----------------------------------------------------------------------------
+const experiment = {
+  recvAt: 0,          // performance.now() when remaining_s was last received (local countdown between status events)
+  lastPhase: null, availKey: null, stripKey: null,
+  init() {
+    $('btnProtoStart').addEventListener('click', () => {
+      const name = $('selProtocol').value;
+      if (!name) return;
+      cmd('protocol_start', { name }).then((j) => { if (j && j.ok) sessions.refresh(); });
+    });
+    $('btnProtoStop').addEventListener('click', () => cmd('protocol_stop'));
+    $('btnProtoNext').addEventListener('click', () => cmd('protocol_next'));
+    $('selProtocol').addEventListener('change', () => this.renderDesc());
+    $('btnRate').addEventListener('click', () => { const p = store.protocol; if (p && isNum(p.pending_rating)) ratingDialog.open(p.pending_rating); });
+    setInterval(() => this.tick(), 250);
+    this.update();
+  },
+  setProtocol(p) { store.protocol = p; this.recvAt = performance.now(); this.update(); },
+  remaining() {
+    const p = store.protocol;
+    if (!p || !p.active || !isNum(p.remaining_s)) return null;
+    return Math.max(0, p.remaining_s - (performance.now() - this.recvAt) / 1000);
+  },
+  update() {
+    const p = store.protocol;
+    const avail = p && Array.isArray(p.available) ? p.available.filter((a) => a && a.name) : [];
+    const key = JSON.stringify(avail.map((a) => [a.name, a.title, a.total_min]));
+    if (key !== this.availKey) {
+      this.availKey = key;
+      const sel = $('selProtocol'), cur = sel.value;
+      sel.innerHTML = avail.length
+        ? avail.map((a) => '<option value="' + esc(a.name) + '">' + esc((a.title || a.name) + ' · ' + (isNum(a.total_min) ? a.total_min : '?') + ' min') + '</option>').join('')
+        : '<option value="">— no protocols —</option>';
+      if (cur && avail.some((a) => a.name === cur)) sel.value = cur;
+      else if (p && p.name && avail.some((a) => a.name === p.name)) sel.value = p.name;
+      this.renderDesc();
+    }
+    const active = !!(p && p.active);
+    $('btnProtoStart').disabled = active || !avail.length;
+    $('btnProtoStop').disabled = !active;
+    $('btnProtoNext').disabled = !active;
+    $('selProtocol').disabled = active;
+    $('expInfo').textContent = active
+      ? (p.name || '') + ' · block ' + ((p.block_index | 0) + 1) + ' / ' + (isNum(p.total_blocks) ? p.total_blocks : '?') + (isNum(p.order_seed) ? ' · seed ' + p.order_seed : '')
+      : (p ? 'idle' : 'waiting for protocol status');
+    this.renderStrip(p);
+    this.renderCentre(p);
+    this.renderStats();
+    this.renderRating(p);
+    this.syncTask(p);
+  },
+  renderDesc() {
+    const p = store.protocol, name = $('selProtocol').value;
+    const a = p && Array.isArray(p.available) ? p.available.find((x) => x && x.name === name) : null;
+    $('protoDesc').textContent = a ? (a.description || '') : '';
+  },
+  renderStrip(p) {
+    const sched = p && Array.isArray(p.schedule) ? p.schedule : [];
+    const cur = p && p.active && isNum(p.block_index) ? p.block_index : -1;
+    const pend = p && isNum(p.pending_rating) ? p.pending_rating : null;
+    const key = JSON.stringify([sched.map((b) => [b && b.condition, b && b.label, b && b.duration_s]), cur, pend]);
+    if (key === this.stripKey) return;
+    this.stripKey = key;
+    $('blockStrip').innerHTML = sched.length ? sched.map((b, i) => {
+      const cond = (b && b.condition) || '';
+      const cls = 'bchip' + (i === cur ? ' cur' : i < cur ? ' done' : '') + (pend === i ? ' due' : '');
+      const title = (i + 1) + '. ' + ((b && b.label) || cond) + ' · ' + (b && isNum(b.duration_s) ? Math.round(b.duration_s / 60) + ' min' : '?') + (b && b.task ? ' · ' + b.task : '') + (b && b.rating ? ' · rated' : '');
+      return '<span class="' + cls + '" style="--cc:' + condColor(cond) + '" title="' + esc(title) + '"><i class="bchip-prog"></i><span class="bchip-t">' + esc((i + 1) + ' ' + (COND_SHORT[cond] || cond || '?')) + '</span></span>';
+    }).join('') : '<span class="muted">' + (p ? 'no schedule yet - start a protocol' : 'schedule appears once the server reports a protocol') + '</span>';
+  },
+  renderCentre(p) {
+    const active = !!(p && p.active), b = active && p.block ? p.block : null;
+    const cond = b ? b.condition : null;
+    $('expBlockLabel').textContent = b ? (b.label || cond || 'Block') : (this.lastPhase === 'done' ? 'Protocol complete' : this.lastPhase === 'stopped' ? 'Protocol stopped' : 'No protocol running');
+    $('expInstruction').textContent = b ? (b.instruction || '') : 'Pick a protocol on the left and press START PROTOCOL. Recording starts automatically.';
+    const tag = $('expCond');
+    tag.hidden = !cond;
+    if (cond) { tag.querySelector('.sw').style.background = condColor(cond); tag.querySelector('span').textContent = cond + (isNum(b.rep) ? ' · round ' + b.rep : ''); }
+    $('taskIdle').hidden = !!b;
+    $('taskFix').hidden = !(b && cond === 'rest');
+    this.tick();
+  },
+  tick() {
+    const p = store.protocol, rem = this.remaining();
+    $('expCountdown').textContent = rem == null ? '--:--' : fmtMMSS(rem);
+    const b = p && p.active ? p.block : null;
+    const prog = $('blockStrip').querySelector('.bchip.cur .bchip-prog');
+    if (prog && b && isNum(b.duration_s) && b.duration_s > 0 && rem != null) prog.style.width = (clamp(1 - rem / b.duration_s, 0, 1) * 100).toFixed(1) + '%';
+  },
+  renderStats() {
+    const s = taskRunner.active ? taskRunner.stats() : null;
+    $('tkLevel').textContent = s ? String(s.level) + (taskRunner.cfg && taskRunner.cfg.staircase ? ' / 12' : '') : '—';
+    $('tkTrials').textContent = s ? String(s.trials) : '—';
+    $('tkAcc').textContent = s && s.acc != null ? Math.round(s.acc * 100) + ' %' : '—';
+    $('tkRt').textContent = s && isNum(s.medRt) ? (s.medRt / 1000).toFixed(2) + ' s' : '—';
+  },
+  renderRating(p) {
+    const pend = p && isNum(p.pending_rating) ? p.pending_rating : null;
+    $('rateBadge').hidden = pend == null;
+    const btn = $('btnRate');
+    btn.hidden = pend == null;
+    btn.textContent = 'Rate block ' + (pend == null ? '' : pend + 1);
+    $('rateStatus').textContent = pend == null ? (p && p.active ? 'nothing pending' : '—') : 'block ' + (pend + 1) + ' not rated yet';
+  },
+  /** Make the task runner follow status.protocol (covers missed events and page reloads mid-block). */
+  syncTask(p) {
+    const b = p && p.active && p.block ? p.block : null;
+    const want = b && b.task && TASK_CFG[b.task] ? b : null;
+    if (!want) { if (taskRunner.active) taskRunner.stop(); return; }
+    const idx = isNum(want.block_index) ? want.block_index : p.block_index;
+    if (!taskRunner.active || taskRunner.blockIndex !== idx || taskRunner.task !== want.task) taskRunner.start(Object.assign({}, want, { block_index: idx }), p.order_seed);
+  },
+};
+
+// ----------------------------------------------------------------------------
+// Experiment: self-report dialog (Flow Short Scale + demand check + overall 0-1)
+// ----------------------------------------------------------------------------
+const ratingDialog = {
+  isOpen: false, blockIndex: null,
+  init() {
+    const rows = FSS_ITEMS.map(([id, text], i) => {
+      const radios = Array.from({ length: 7 }, (_, k) => '<label class="rt-opt"><input type="radio" name="fss_' + id + '" value="' + (k + 1) + '"><span>' + (k + 1) + '</span></label>').join('');
+      return '<div class="rt-row" tabindex="0" data-id="' + id + '" data-n="7"><span class="rt-text">' + (i + 1) + '. ' + esc(text) + '</span>'
+        + '<div class="rt-scale"><span class="rt-anchor">not at all</span>' + radios + '<span class="rt-anchor">very much</span></div></div>';
+    }).join('');
+    const demand = '<div class="rt-row" tabindex="0" data-id="demand" data-n="3"><span class="rt-text">11. For me personally, the demands were</span><div class="rt-scale">'
+      + FSS_DEMAND.map(([v, l]) => '<label class="rt-opt rt-opt-w"><input type="radio" name="fss_demand" value="' + v + '"><span>' + v + ' · ' + esc(l) + '</span></label>').join('') + '</div></div>';
+    const box = $('ratingItems');
+    box.innerHTML = rows + demand;
+    box.addEventListener('keydown', (e) => this.onKey(e));
+    box.addEventListener('change', () => this.validate());
+    $('ratingSlider').addEventListener('input', () => { $('ratingSliderVal').textContent = parseFloat($('ratingSlider').value).toFixed(2); });
+    $('ratingSubmit').addEventListener('click', () => this.submit());
+    $('ratingClose').addEventListener('click', () => this.close());
+    $('ratingModal').addEventListener('click', (e) => { if (e.target === $('ratingModal')) this.close(); });
+    document.addEventListener('keydown', (e) => { if (e.key === 'Escape' && this.isOpen) this.close(); });
+  },
+  /** digits 1..7 (1..3 on the demand row) answer the focused row and move focus to the next one */
+  onKey(e) {
+    const row = e.target && e.target.closest ? e.target.closest('.rt-row') : null;
+    if (!row || e.ctrlKey || e.altKey || e.metaKey) return;
+    const n = parseInt(row.dataset.n, 10) || 7, k = parseInt(e.key, 10);
+    if (!(k >= 1 && k <= n)) return;
+    e.preventDefault();
+    const r = row.querySelector('input[value="' + k + '"]');
+    if (r) r.checked = true;
+    this.validate();
+    const next = row.nextElementSibling;
+    if (next && next.classList.contains('rt-row')) next.focus(); else $('ratingSlider').focus();
+  },
+  open(blockIndex, view) {
+    const p = store.protocol;
+    const b = view || (p && Array.isArray(p.schedule) ? p.schedule[blockIndex] : null);
+    this.blockIndex = blockIndex;
+    $('ratingTitle').textContent = 'Rate block ' + (blockIndex + 1) + (b ? ' · ' + (b.label || b.condition || '') : '');
+    $('ratingItems').querySelectorAll('input[type=radio]').forEach((r) => { r.checked = false; });
+    $('ratingNote').value = '';
+    $('ratingSlider').value = '0.5'; $('ratingSliderVal').textContent = '0.50';
+    $('ratingModal').hidden = false; this.isOpen = true;
+    this.validate();
+    const first = $('ratingItems').querySelector('.rt-row');
+    if (first) first.focus();
+  },
+  close() {
+    $('ratingModal').hidden = true; this.isOpen = false;
+    if (taskRunner.active && taskRunner.awaiting) $('taskInput').focus();
+  },
+  collect() {
+    const items = {}, missing = [];
+    for (const [id] of FSS_ITEMS) {
+      const r = $('ratingItems').querySelector('input[name="fss_' + id + '"]:checked');
+      if (r) items[id] = parseInt(r.value, 10); else missing.push(id);
+    }
+    const d = $('ratingItems').querySelector('input[name="fss_demand"]:checked');
+    if (d) items.demand = parseInt(d.value, 10); else missing.push('demand');
+    items.flow_overall = clamp(parseFloat($('ratingSlider').value) || 0, 0, 1);
+    return { items, missing };
+  },
+  validate() {
+    const { missing } = this.collect();
+    $('ratingMissing').textContent = missing.length ? missing.length + ' item' + (missing.length > 1 ? 's' : '') + ' left' : 'all items answered';
+    $('ratingSubmit').disabled = missing.length > 0;
+    return missing.length === 0;
+  },
+  async submit() {
+    const { items, missing } = this.collect();
+    if (missing.length) { this.validate(); return; }
+    $('ratingSubmit').disabled = true;
+    const j = await cmd('rating', { block_index: this.blockIndex, items, note: $('ratingNote').value.trim().slice(0, 200) });
+    if (j && j.ok) {
+      if (store.protocol && store.protocol.pending_rating === this.blockIndex) { store.protocol.pending_rating = null; experiment.update(); }
+      this.close();
+    } else { $('ratingMissing').textContent = 'submit failed: ' + (j && j.error ? j.error : 'no response'); $('ratingSubmit').disabled = false; }
+  },
+};
+
+// ----------------------------------------------------------------------------
 // Event handling
 // ----------------------------------------------------------------------------
 const widgets = {};
@@ -1038,6 +1487,39 @@ function onStatus(d) {
   store.status = d;
   navBar.update();
   bandPanel.update();
+  if (d && d.protocol && typeof d.protocol === 'object') experiment.setProtocol(d.protocol);   // absent until the server is updated
+}
+
+/** event: protocol - transitions; status (1 s) remains the authority, this just reacts immediately. */
+function onProtocol(d) {
+  if (!d || typeof d.phase !== 'string') return;
+  const p = store.protocol || (store.protocol = { active: false, schedule: [], available: [], pending_rating: null });
+  experiment.lastPhase = d.phase;
+  switch (d.phase) {
+    case 'block_start':
+      p.active = true; p.block_index = d.block_index; p.block = d;
+      p.remaining_s = isNum(d.duration_s) ? d.duration_s : null; experiment.recvAt = performance.now();
+      if (Array.isArray(p.schedule) && isNum(d.block_index)) p.schedule[d.block_index] = d;
+      break;
+    case 'block_end':
+      if (taskRunner.active && taskRunner.blockIndex === d.block_index) taskRunner.stop();
+      p.remaining_s = 0; experiment.recvAt = performance.now();
+      break;
+    case 'rating_due':
+      if (isNum(d.block_index)) { p.pending_rating = d.block_index; ratingDialog.open(d.block_index, d); }
+      break;
+    case 'rated':
+      if (p.pending_rating === d.block_index) p.pending_rating = null;
+      if (ratingDialog.isOpen && ratingDialog.blockIndex === d.block_index) ratingDialog.close();
+      break;
+    case 'done':
+    case 'stopped':
+      p.active = false; p.block = null; p.block_index = null; p.remaining_s = null;
+      taskRunner.stop();
+      break;
+    default: break;
+  }
+  experiment.update();
 }
 
 function onBand(d) {
@@ -1081,6 +1563,7 @@ function connect() {
   es.addEventListener('status', (ev) => { const d = parse(ev); if (d) onStatus(d); });
   es.addEventListener('band', (ev) => { const d = parse(ev); if (d) onBand(d); });
   es.addEventListener('mark', (ev) => { const d = parse(ev); if (d) onMark(d); });
+  es.addEventListener('protocol', (ev) => { const d = parse(ev); if (d) onProtocol(d); });
   es.addEventListener('error', () => {
     store.connected = false;
     navBar.setChip('chipConn', 'disconnected · retry in ' + Math.round(backoff / 1000) + ' s', 'chip-bad');
@@ -1107,6 +1590,9 @@ function boot() {
   feltFlow.init();
   sessions.init();
   validationTable.init();
+  taskRunner.init();
+  ratingDialog.init();
+  experiment.init();
   buildLegends();
   redrawAnalysisWidgets();
   widgets.flow.draw();

@@ -12,7 +12,7 @@ from pathlib import Path
 from urllib.parse import parse_qs, urlparse
 
 STATIC = Path(__file__).parent / "static"
-SERVER_VERSION = "0.1.0"
+SERVER_VERSION = "0.2.0"
 SAFE_LABEL = re.compile(r"^[A-Za-z0-9_-]{0,32}$")
 
 
@@ -20,8 +20,9 @@ class App:
     """What the handlers talk to: the pipeline, the board, the band link and the recorder,
     plus the command dispatcher. Built by app.py."""
 
-    def __init__(self, pipeline, board, recorder, band_manager, config: dict, log=print):
+    def __init__(self, pipeline, board, recorder, band_manager, config: dict, log=print, protocol=None):
         self.pipeline, self.board, self.recorder, self.bands, self.cfg, self.log = pipeline, board, recorder, band_manager, config, log
+        self.protocol = protocol            # ProtocolRunner, wired by app.py (may be None)
         self.subscribers: list = []
         self.sub_lock = threading.Lock()
         self.sessions_dir = Path(__file__).parent / "sessions"
@@ -68,7 +69,32 @@ class App:
     def status(self) -> dict:
         return {"board": self.board.status(), "band": self.bands.status(), "recorder": self.recorder.status(),
                 "filter": self.pipeline.filter_cfg, "flow_weights": self.pipeline.flow_weights,
+                "flow_index": self.pipeline.flow_status(),
+                "protocol": self.protocol.status() if self.protocol else None,
                 "clock": round(time.time(), 3)}
+
+    # --- protocol runner callbacks ------------------------------------------------
+    def on_protocol_event(self, ev: dict) -> None:
+        """Block transitions drive the EEG baseline: the rest block marked `baseline` collects
+        the wearer's resting statistics and freezes them when it ends."""
+        phase = ev.get("phase")
+        if phase == "block_start" and ev.get("baseline"):
+            self.pipeline.flow.start_rest()
+            self.log("[protocol] collecting the resting baseline")
+        elif phase == "block_end" and ev.get("baseline"):
+            self.pipeline.flow.end_rest()
+            self.log(f"[protocol] baseline {self.pipeline.flow.baseline_state}")
+        self.pipeline.on_protocol(ev)
+        if hasattr(self.board, "set_condition"):            # the simulator follows the condition
+            if phase == "block_start":
+                self.board.set_condition(ev.get("condition"))
+            elif phase in ("done", "stopped"):
+                self.board.set_condition(None)
+        self.broadcast("protocol", ev)
+
+    def on_protocol_mark(self, kind: str, value, note: str = "") -> None:
+        m = self.pipeline.mark(kind, value, note)
+        self.broadcast("mark", m)
 
     def hello(self) -> dict:
         return {"server_version": SERVER_VERSION, **self.pipeline.hello(), "history": self.pipeline.history()}
@@ -153,6 +179,40 @@ class App:
             self.bands.switch(src, user_id=body.get("user_id"), band=body.get("band"),
                               address=body.get("address"), port=body.get("port"))
             return {"band": self.bands.status()}
+        if action in ("protocol_start", "protocol_stop", "protocol_next", "rating", "trial"):
+            if self.protocol is None:
+                raise ValueError("no protocol runner")
+            if action == "protocol_start":
+                name = str(body.get("name") or "")
+                seed = body.get("seed")
+                if not self.recorder.active:
+                    self.recorder.start(re.sub(r"[^A-Za-z0-9_-]", "", name)[:32])
+                    self.log(f"[rec] recording to {self.recorder.dir} (protocol {name})")
+                return {"protocol": self.protocol.start(name, None if seed in (None, "") else int(seed))}
+            if action == "protocol_stop":
+                return {"protocol": self.protocol.stop()}
+            if action == "protocol_next":
+                return {"protocol": self.protocol.next()}
+            if action == "rating":
+                items = body.get("items") or {}
+                if not isinstance(items, dict):
+                    raise ValueError("items must be an object")
+                clean = {}
+                for k, v in items.items():
+                    k = str(k)[:24]
+                    try:
+                        clean[k] = float(v)
+                    except (TypeError, ValueError):
+                        continue
+                rec = self.protocol.rate(int(body.get("block_index", -1)), clean, str(body.get("note") or "")[:300])
+                return {"rating": rec}
+            if action == "trial":
+                rec = {k: body.get(k) for k in ("block_index", "task", "level", "problem", "answer", "response", "correct", "rt_ms", "t")}
+                rec["t"] = float(rec["t"]) if rec.get("t") else time.time()
+                blk = self.protocol.current()
+                rec["condition"] = blk["condition"] if blk else None
+                p.trial(rec)
+                return {"ok": True}
         raise ValueError(f"unknown action {action!r}")
 
 
@@ -209,6 +269,8 @@ class Handler(BaseHTTPRequestHandler):
                 return self._json(app.pipeline.history())
             if u.path == "/api/wearers":
                 return self._json({"wearers": app.bands.wearers()})
+            if u.path == "/api/protocol":
+                return self._json(app.protocol.status() if app.protocol else {"active": False, "available": []})
             if u.path == "/api/sessions":
                 return self._json({"sessions": app.sessions()})
             if u.path == "/api/report":

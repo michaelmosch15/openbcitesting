@@ -46,10 +46,11 @@ class Recorder:
             {**self.meta, "labels": self.labels, "started": stamp}, indent=2), "utf-8")
         self._open("eeg_raw", ["t_host", "sample"] + [f"ch{i + 1}_{l}" for i, l in enumerate(self.labels)]
                    + ["acc_x", "acc_y", "acc_z"])
-        self._open("band", ["t", "flow", "hr", "anom", "held", "settling", "fhi"])
+        self._open("band", ["t", "flow", "hr", "anom", "held", "settling", "fhi", "asleep", "poor_contact"])
         self._open("marks", ["t", "kind", "value", "note"])
+        self._open("task", ["t", "block_index", "condition", "task", "level", "problem", "answer", "response", "correct", "rt_ms"])
         self._epoch_header = None
-        self.counts = {"eeg": 0, "epochs": 0, "band": 0, "marks": 0}
+        self.counts = {"eeg": 0, "epochs": 0, "band": 0, "marks": 0, "trials": 0}
         self.active = True
         self.started_at = time.time()
         self._thread = threading.Thread(target=self._writer, name="recorder", daemon=True)
@@ -94,6 +95,10 @@ class Recorder:
         if self.active:
             self.q.put(("mark", {"t": time.time(), "kind": kind, "value": value, "note": note}))
 
+    def trial(self, rec: dict) -> None:
+        if self.active:
+            self.q.put(("trial", dict(rec)))
+
     # --- consumer -----------------------------------------------------------------
     def _writer(self) -> None:
         while True:
@@ -120,12 +125,20 @@ class Recorder:
                     s = item[1]
                     self._writers["band"].writerow([f"{s['t']:.3f}", s["flow"], s["hr"], s["anom"],
                                                     int(s["held"]), int(s["settling"]),
-                                                    "" if s.get("fhi") is None else s["fhi"]])
+                                                    "" if s.get("fhi") is None else s["fhi"],
+                                                    int(bool(s.get("asleep"))), int(bool(s.get("poor_contact")))])
                     self.counts["band"] += 1
                 elif kind == "mark":
                     m = item[1]
                     self._writers["marks"].writerow([f"{m['t']:.3f}", m["kind"], m["value"], m["note"]])
                     self.counts["marks"] += 1
+                elif kind == "trial":
+                    r = item[1]
+                    self._writers["task"].writerow([f"{float(r.get('t', time.time())):.3f}", r.get("block_index", ""),
+                                                    r.get("condition", ""), r.get("task", ""), r.get("level", ""),
+                                                    r.get("problem", ""), r.get("answer", ""), r.get("response", ""),
+                                                    int(bool(r.get("correct"))), r.get("rt_ms", "")])
+                    self.counts["trials"] = self.counts.get("trials", 0) + 1
                 if self.q.qsize() == 0:
                     for f in self._files.values():
                         f.flush()

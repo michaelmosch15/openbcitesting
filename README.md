@@ -1,153 +1,150 @@
 # openbci-flow-validation
 
-A localhost dashboard that streams an OpenBCI Cyton v3 (Ultracortex headset, 8 or 16
-channels, RFduino USB dongle) into the browser the way the OpenBCI GUI does, computes an
-EEG flow index from the band powers, and compares it live with the BioProxal wrist band's
-flow score. The point is to find out, with pre-registered gates and an honest report,
-whether the band's score tracks a literature-based EEG proxy of flow.
+A localhost experiment runner and dashboard that streams an OpenBCI Cyton v3 (Ultracortex
+headset, 8 or 16 channels, RFduino USB dongle) into the browser, runs a difficulty-ladder
+protocol (boredom / flow / overload mental arithmetic with a Flow Short Scale self-report
+after every block), computes a literature-grounded EEG flow index (frontal theta against
+an eyes-open rest baseline), and scores the BioProxal wrist band's flow score against both
+per block, with pre-registered gates and an honest report.
 
-Python 3.14, numpy + pyserial (+ bleak for direct BLE). No pandas, no scipy, no BrainFlow,
+Python 3.12+, numpy + pyserial (+ bleak for direct BLE). No pandas, no scipy, no BrainFlow,
 no native DLLs (Windows Smart App Control blocks them on this laptop).
 
-## Quick start (60 seconds)
+## Quick start
 
-1. Plug the OpenBCI dongle into USB. Set the dongle switch to **GPIO6** and the Cyton
-   board switch to **PC**. Turn the board on (blue LED).
-2. From this folder run `run.ps1` (PowerShell), `run.bat` (cmd), or `python app.py`.
-   The scripts check `import numpy, serial` and print `pip install -r requirements.txt`
-   if either is missing.
-3. The server starts on http://127.0.0.1:8765 and the browser opens. Press **Start** in the
-   header. The time series should move; the status bar shows the COM port, 8/16 ch and the
-   packet count.
-4. No hardware? `python app.py --sim` runs a synthetic 8-channel board plus a synthetic band
-   (`SimBoard` in `cyton.py`, `SimBandLink` in `band_link.py`).
+1. Plug the OpenBCI dongle into USB. Dongle switch to **GPIO6**, Cyton board switch to
+   **PC**, board on (blue LED). Headset on the participant, ear clips (SRB2, BIAS) on.
+   Band on the participant's wrist for at least 10 min, phone app connected and uploading.
+2. From this folder: `python app.py --montage flow` (or `run.ps1` / `run.bat`, which also
+   check `numpy` and `serial`). The browser opens http://127.0.0.1:8765.
+3. Press **Start**. Every channel must read `good` (not railed / near / flat); re-seat
+   electrodes until it does. Check the FFT has no mains peak (notch 60, or 50).
+4. In the band panel **pick the wearer** (Supabase) and wait for a fresh sample.
+5. In the experiment panel pick `difficulty_ladder` and press **START PROTOCOL**.
+   Recording starts by itself. Follow the screen: 3 min rest eyes open (the baseline),
+   1 min eyes closed, then six 6-min arithmetic blocks in a counterbalanced order with a
+   self-report dialog and a 60-s pause after each, then 2 min rest. About 47 min.
+6. Press Stop recording. Open **Sessions**, pick the session, press **Report**. Copy the
+   verdict into the results log in `docs/VALIDATION_PROTOCOL.md`.
 
-Command line (defaults come from `config.json`):
+No hardware? `python app.py --sim` runs a synthetic board and band that follow the
+protocol's conditions; use the `sim_quick` protocol (about 9 min).
+
+Command line (defaults from `config.json`):
 
 ```
-python app.py [--sim] [--port 8765] [--board COMx] [--channels auto|8|16]
-              [--source serial|udp] [--udp-port 12345]
+python app.py [--sim] [--montage default|flow] [--port 8765] [--board COMx]
+              [--channels auto|8|16] [--source serial|udp] [--udp-port 12345]
               [--band supabase|ble|usb|sim|none] [--user-id <uuid>] [--band-name BioProxal4]
               [--ble-address <mac>] [--no-browser] [--no-stream] [--config path/to/config.json]
 ```
 
-`--no-stream` starts the server without sending `b` to the board; press Start in the browser.
+Install once: `pip install -r requirements.txt` (`bleak` only for `--band ble`).
 
-Install once: `pip install -r requirements.txt` (`bleak` is only needed for `--band ble`).
+## Montage: put electrodes where the index needs them
+
+The index is frontal theta (4-7 Hz). The Ultracortex factory 8-channel montage (Fp1 Fp2
+C3 C4 P7 P8 O1 O2) has only the prefrontal Fp sites, which blinks dominate. Move the
+electrodes to **Fz F3 F4 Cz C3 C4 P3 P4** and start with `--montage flow` (the labels in
+`config.json` `labels_8_flow`): theta is then read at Fz/F3/F4 and the upper-alpha and
+engagement covariates at Cz/C3/C4/P3/P4. With a 16-channel Daisy the frontal set is
+F7 F8 F3 F4. The montage is recorded in `session.json` and in the protocol header; it is
+part of the pre-registration. Details: `docs/EEG_FLOW_INDEX.md` section 5.
+
+## What the EEG index is
+
+`flow_eeg = sigmoid(z_theta)`: relative power of 4-7 Hz frontal theta over the 1-45 Hz
+total, from a 10-s Welch spectrum (2-s Hann segments, 50 % overlap, segments above
+150 uV peak-to-peak or 100 uV absolute dropped), log, z-scored against the mean and SD of
+the 3-min eyes-open rest block, updated every 2 s. 0.5 = at rest, 0.73 = one resting SD
+above, 0.27 = one below. Weights are theta 1.0 / alpha 0 / beta 0 and are frozen before
+data collection; `flow_eeg_alt` (theta minus 0.5 x |upper-alpha deviation|) is exploratory.
+Why only theta, what the index can and cannot claim, and every number: `docs/EEG_FLOW_INDEX.md`;
+the research review: `docs/EEG_FLOW_LITERATURE.md`.
 
 ## Band sources
 
-The band's flow score can reach this tool three ways. Pick with `--band` or the band panel.
-
 | Source | Path | Cadence | Use when |
 |---|---|---|---|
-| `supabase` (default) | band -> Amplifly phone app (BLE) -> Supabase `wearable_samples` -> this server polls REST every 5 s (`supabase_link.py`) | 1 row/min | The normal deployment path; the phone app stays open. Needs `%USERPROFILE%\.bioproxal\supabase.env` with `SUPABASE_URL` and `SUPABASE_SECRET_KEY` or `SUPABASE_PUBLISHABLE_KEY`. Pick the wearer in the band panel (`GET /api/wearers`). |
-| `ble` | band -> this laptop over BLE with `bleak` (`band_ble.py`) | every 2 s | Finer time resolution. The band allows one BLE connection: close the Amplifly app (or turn the phone's Bluetooth off) first. Nothing is written to the band. |
-| `usb` | band on a USB cable, console unlocked with the firmware repo's tools (`band_link.py`) | every 2 s (`[pub]` lines) | Bench use. Needs `usb.bioproxal_tools_dir` in `config.json` pointing at the firmware repo's `tools/` and the master key at `%USERPROFILE%\.bioproxal\master.key`. Read-only: no baseline reset, no log clear, no flash. |
-| `sim` | synthetic | every 2 s | With `--sim`. The sim band is the simulator's hidden flow state plus noise and a 20 s lag. |
-| `none` | - | - | EEG only. |
-
-Pairs form at the band's cadence: Supabase averages the EEG index over the 60 s before each
-row (`pair_window_s.supabase`); BLE/USB/sim use 10 s.
-
-## Widgets
-
-- **Time series** - filtered uV per channel, 5/10/20 s window, OpenBCI GUI channel colours,
-  a railed / near-railed / flat flag per channel from the raw signal.
-- **FFT** - 2 s Hann PSD per channel, uV^2/Hz, 0.5-60 Hz.
-- **Band power** - delta/theta/alpha/beta/gamma, absolute and relative, per channel.
-- **Head plot** - 10-20 positions for the configured labels, coloured by the selected band.
-- **Flow comparison** - EEG flow index (every 2 s) and band flow (at the band's cadence) on
-  one 0-1 axis, plus `n_pairs`, `r`, the 95 % CI, r over the last 5 min, MAE, best lag and
-  the lag curve.
-- **Band panel** - source, unit, connection state, last sample age, HR (BLE/USB only),
-  HELD / settling / asleep / poor-contact flags, window state; wearer picker for Supabase;
-  BLE scan list while not connected.
-- **Felt-flow marks** - a 0-1 slider (`felt_flow`) and buttons `flow_start`, `flow_end`,
-  `distracted`, `note`. Marks go to history and, while recording, to `marks.csv`.
-- **Sessions + report** - list `sessions/`, run `report.py` on one, read `report.md` in place.
-
-Channel exclusion (`set_channel`) removes a channel from the FFT/band/head widgets and from
-the EEG flow index. Filter controls (`set_filter`) rebuild the notch + band-pass chain.
-
-## Validation workflow
-
-1. **Start** the stream; check every channel reads "good" (not railed/flat).
-2. **Pick the wearer** in the band panel (Supabase) or connect BLE/USB. Wait until the band
-   panel shows a fresh sample and the flow widget shows `baseline_ready` (about 30 s after
-   the stream starts; the index sits at 0.5 until then).
-3. **Record** with a short label (`[A-Za-z0-9_-]{0,32}`), for example `desk`.
-4. **Work** on a real focused task for at least 20 min. Rate felt flow with the slider every
-   ~5 min and at transitions; press `distracted` when you were.
-5. **Stop** recording. Open **Sessions**, pick the session, press **Report**.
-
-With the default Supabase source a 20-min session gives about 20 pairs (one per band row).
-The pre-registered minimum is 20 usable pairs, so plan for 25-40 min.
+| `supabase` (default) | band -> Amplifly phone app (BLE) -> Supabase `wearable_samples` -> polled every 5 s (`supabase_link.py`) | 1 row/min (5-6 per 6-min block) | The normal deployment path. Needs `%USERPROFILE%\.bioproxal\supabase.env` with `SUPABASE_URL` and a key. Pick the wearer in the band panel. |
+| `ble` | band -> this laptop with `bleak` (`band_ble.py`) | every 2 s | Finer resolution. The band allows one BLE connection: close the Amplifly app first. Nothing is written to the band. |
+| `usb` | band on a cable through the firmware repo's tools (`band_link.py`) | every 2 s | Bench use; needs `usb.bioproxal_tools_dir` and `%USERPROFILE%\.bioproxal\master.key`. Read-only. |
+| `sim` | synthetic | every 2 s | With `--sim`: the simulator's hidden state, which follows the protocol's conditions, plus noise and a 20-s lag. |
+| `none` | - | - | EEG and self-report only. |
 
 ## Reading the report
 
-`report.py` reads `epochs.csv`, `band.csv` and `marks.csv` from the session folder, forms
-pairs at the band's cadence (EEG flow averaged over `pair_window_s` before each band
-timestamp, held/settling/no-reading rows excluded), and writes `report.md` + `report.json`.
+`report.py` scores the session per block from `epochs.csv`, `band.csv`, `marks.csv`
+(block and `rating` marks) and `task.csv`, then applies the pre-registered gates of
+`docs/VALIDATION_PROTOCOL.md` section 7:
 
-Pre-registered primary gates, all three required for **PASS**:
-
-| Gate | Value |
+| Gate | Threshold |
 |---|---|
-| Pearson r, band flow vs EEG flow index | r >= 0.5 |
-| Bootstrap 95 % CI on r | lower bound > 0 |
-| Usable pairs | n >= 20 |
+| G1 manipulation check | Flow Short Scale condition mean flow > boredom and flow > overload; `demand` item boredom < flow < overload |
+| G2 band ordering | band condition mean highest in flow vs both other conditions |
+| G3 block agreement | Spearman rho between the band's and the EEG index's block means >= 0.5 over >= 6 task blocks |
 
-Below 20 pairs the verdict is **INCONCLUSIVE**, not FAIL. A FAIL is reported as FAIL. The
-secondary metrics (correlation of the band score with each exported component - `z_theta`,
-`z_alpha`, `z_beta`, `engagement_index`, `theta_alpha_ratio` - best lag, in-flow agreement,
-felt-flow correlations) are there to diagnose a result, not to change the verdict. See
-`docs/VALIDATION_PROTOCOL.md`.
+**PASS** = G1, G2 and G3. **FAIL** = G1 holds, G2 or G3 does not (the task worked, the
+band did not track it). **INCONCLUSIVE** = G1 fails or a session-level exclusion applies
+(baseline never frozen, fewer than 6 usable blocks, missing ratings). The EEG reference
+check (theta index flow > boredom) is printed next to the verdict and does not change it.
+Epoch-level r, the lag sweep and felt-flow correlations from v0.1 remain as secondary
+numbers. A FAIL is reported as FAIL.
+
+## Widgets
+
+Experiment panel (protocol picker, START / NEXT / STOP, schedule strip, instruction, task,
+self-report status); time series (5/10/20 s, quality flags); FFT; band power; head plot;
+flow comparison (band and EEG index on one 0-1 axis, block means per condition, block rho,
+secondary pair statistics); band panel (source, unit, HR on BLE/USB, held / settling /
+asleep / poor-contact, wearer picker); felt-flow marks; sessions + report. Channel
+exclusion (`set_channel`) removes a channel from the widgets and from the index; filter
+controls change only the display, never the index.
 
 ## Troubleshooting
 
 | Symptom | Check |
 |---|---|
-| "no dongle found" / wrong COM | `find_dongle()` wants an FTDI port (VID 0x0403), preferring one that calls itself OpenBCI / FT231X. `python -c "import cyton; print(cyton.list_candidate_ports())"` lists what it sees. The band's own ESP32-S3 port (VID 0x303A) is never a candidate. Force with `--board COM7`. |
-| "no '$$$' banner from the board" | Board switch to **PC**, dongle switch to **GPIO6**, board on, dongle paired to this board. Close the OpenBCI GUI if it holds the port, unplug/replug the dongle, retry. |
-| Channel flagged **railed** / **near** | Raw signal above 90 % / 75 % of full scale (about 187 500 uV): electrode not on the scalp, or the SRB2/BIAS ear clips off. Press the electrode down; the flag should go to good. **flat** = open input. |
-| 60 Hz peak in the FFT | The notch defaults to 60 Hz (`notch_hz`). In a 50 Hz country set the notch to 50 in the filter controls or `config.json`. |
-| 16-ch: the top and bottom 8 labels look swapped | Flip `daisy_even_is_upper` in `config.json` (which half of the alternating Daisy packets carries channels 9-16). |
-| Supabase `HTTP 401` | Key missing or wrong in `%USERPROFILE%\.bioproxal\supabase.env`. It never goes in the repo. |
-| Supabase connects, no rows | Project paused (free tier) or the phone app is not uploading. Open the Amplifly app; check `/api/wearers` for a fresh `last_sampled_at`. |
-| BLE "no 'BioProxal*' band advertising" | The band is connected to the phone. Close the Amplifly app or turn the phone's Bluetooth off; the band allows one connection. Also: band on, worn, laptop Bluetooth on. |
-| USB "firmware tools not found" / "no USB master key" | Set `usb.bioproxal_tools_dir` to the firmware repo's `tools/`; the key must be at `%USERPROFILE%\.bioproxal\master.key`. |
-| `ImportError` / DLL blocked | Windows Smart App Control blocks unsigned native DLLs (pandas, scipy, BrainFlow). This tool needs none of them. Run `python -m pip`, `python -m unittest` rather than `.exe` shims. |
-| Flow index stuck at 0.5 | Baseline warm-up (first 15 epochs = 30 s): all z-scores are 0 until then. |
+| "no dongle found" / wrong COM | `find_dongle()` wants an FTDI port (VID 0x0403). `python -c "import cyton; print(cyton.list_candidate_ports())"` lists ports. The band's ESP32-S3 port (VID 0x303A) is never a candidate. Force with `--board COM7`. |
+| "no '$$$' banner from the board" | Board switch **PC**, dongle switch **GPIO6**, board on, dongle paired to this board. Close the OpenBCI GUI, replug the dongle, retry. |
+| Channel **railed** / **near** / **flat** | Electrode not on the scalp or ear clips off (railed / near); open input (flat). Re-seat. |
+| 60 Hz peak in the FFT | Set the notch to 50 in a 50-Hz country (filter controls or `notch_hz`). |
+| 16-ch labels look swapped | Flip `daisy_even_is_upper` in `config.json`. |
+| Supabase `HTTP 401` / no rows | Key in `%USERPROFILE%\.bioproxal\supabase.env`; project paused or phone app not uploading - check `/api/wearers`. |
+| BLE "no 'BioProxal*' band advertising" | The band is connected to the phone; close the Amplifly app or turn the phone's Bluetooth off. |
+| Flow index stuck at 0.5 | First 15 epochs (30 s), or every epoch is an artifact (`artifact_epochs` in the flow widget rising): blinks, movement, bad contact. |
+| `baseline_state` never `rest-frozen` | The rest block had fewer than 15 clean epochs. The session is INCONCLUSIVE; fix contact / stillness and run again. |
+| `frontal_sites` shows `Fp1,Fp2` | Factory montage labels. Move the electrodes and start with `--montage flow`, or accept an Fp-only session and label it so. |
+| Report says INCONCLUSIVE "manipulation failed" | The ratings did not put flow highest. The task did not induce the states for this person; not a band result. |
+| `ImportError` / DLL blocked | Smart App Control blocks native DLLs; this tool needs none. Use `python -m pip`, `python -m unittest`. |
 
 ## Folder map
 
 ```
-app.py              entry point, CLI, BandManager (swaps band sources), opens the browser
-server.py           stdlib HTTP + SSE server (App, serve), SSE tick thread
-pipeline.py         Pipeline: filters, 2-s epochs, PSD, flow index, pairing, stats, history
-cyton.py            CytonBoard (serial driver), SampleBuffer, SimBoard, find_dongle
-openbci_udp.py      UdpBoard: mirror the OpenBCI GUI Networking widget (UDP time series)
-dsp.py              Biquad, FilterChain, psd, band_powers, relative_powers, quality
-flow_index.py       FlowIndex, RollingZ: the EEG flow index and its components
-band_link.py        BandLink (USB via firmware tools), SimBandLink
-band_ble.py         BleBandLink, decode_state (BLE STATE frame)
-supabase_link.py    SupabaseBandLink, SupabaseClient, row_to_sample
-recorder.py         Recorder: session folders, CSVs from a writer thread
-report.py           offline report with the pre-registered gates
-static/             index.html, app.js, style.css (the browser only renders)
-config.json         defaults (port, board, labels, filters, band source, weights, windows)
-docs/               API.md, ARCHITECTURE.md, REQUIREMENTS.md, TEST_PLAN.md,
-                    VALIDATION_PROTOCOL.md, DECISIONS.md
-tests/              unittest modules: python -m unittest discover -s tests -v
+app.py              entry point, CLI (--montage), BandManager, wires the protocol runner
+server.py           stdlib HTTP + SSE server (App, serve); protocol events drive the baseline
+protocol.py         ProtocolRunner: counterbalanced block schedule, timer thread, ratings
+protocols.json      difficulty_ladder, sim_quick, free_work
+pipeline.py         Pipeline: filters, 10-s Welch index spectrum, artifact rule, pairs, block stats
+flow_index.py       FlowIndex, Baseline (rest / session / rolling), site sets
+dsp.py              Biquad, FilterChain, psd, welch, band powers, quality
+cyton.py            CytonBoard, SampleBuffer, SimBoard (follows protocol conditions), find_dongle
+openbci_udp.py      UdpBoard: mirror the OpenBCI GUI Networking widget
+band_link.py        BandLink (USB), SimBandLink;  band_ble.py  BleBandLink;  supabase_link.py
+recorder.py         Recorder: session folders, CSVs (eeg_raw, epochs, band, marks, task)
+report.py           offline per-block report with the pre-registered gates
+static/             index.html, app.js (task + rating dialog), style.css
+config.json         defaults: port, board, labels_8 / labels_8_flow / labels_16, filters,
+                    flow_index (weights, baseline, artifact thresholds, Welch window)
+docs/               EEG_FLOW_LITERATURE, EEG_FLOW_INDEX, VALIDATION_PROTOCOL, API,
+                    ARCHITECTURE, REQUIREMENTS, TEST_PLAN, DECISIONS
+tests/              python -m unittest discover -s tests -v
 sessions/           recordings (git-ignored)
-run.ps1 / run.bat   launchers
 ```
 
 ## Privacy
 
-Sessions hold raw EEG, heart-rate-derived scores and felt-flow ratings of real people.
-`sessions/` is git-ignored and stays on this machine. Supabase and USB credentials live in
-`%USERPROFILE%\.bioproxal\`, never in the repo; the browser never sees them (the server
-talks to Supabase, the browser only gets decoded samples over localhost). The server binds
-127.0.0.1 only. This tool never flashes, resets or writes to the band.
+Sessions hold raw EEG, heart-rate-derived scores, task answers and self-reports of real
+people. `sessions/` is git-ignored and stays on this machine. Credentials live in
+`%USERPROFILE%\.bioproxal\`, never in the repo; the browser never sees them. The server
+binds 127.0.0.1 only. This tool never flashes, resets or writes to the band.

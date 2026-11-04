@@ -28,12 +28,20 @@
     "bioproxal_tools_dir": "../worktrees/v0629/tools"
   },
   "flow_index": {
-    "theta": 0.5,
-    "alpha": 0.25,
-    "beta": 0.25,
+    "theta": 1.0,
+    "alpha": 0.0,
+    "beta": 0.0,
+    "baseline_mode": "rest",
     "baseline_epochs": 150,
-    "warmup_epochs": 15
+    "warmup_epochs": 15,
+    "artifact_p2p_uv": 150.0,
+    "artifact_abs_uv": 100.0,
+    "analysis_hi_hz": 45.0,
+    "index_window_s": 10.0,
+    "index_seg_s": 2.0,
+    "index_min_clean_fraction": 0.5
   },
+  "labels_8_flow": ["Fz", "F3", "F4", "Cz", "C3", "C4", "P3", "P4"],
   "pair_window_s": {
     "supabase": 60,
     "ble": 10,

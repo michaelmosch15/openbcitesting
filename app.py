@@ -146,22 +146,33 @@ def main(argv=None) -> int:
     ap.add_argument("--user-id", help="Supabase user_id (full uuid) to follow")
     ap.add_argument("--band-name", help="Supabase band name to follow, e.g. BioProxal4")
     ap.add_argument("--ble-address", help="band BLE address (default: first BioProxal* found)")
+    ap.add_argument("--montage", choices=["default", "flow"], default="default",
+                    help="8-ch electrode labels: 'default' = Mark IV factory sites (Fp1 Fp2 C3 C4 P7 P8 O1 O2); "
+                         "'flow' = the re-sited flow montage in config.json labels_8_flow (Fz F3 F4 Cz C3 C4 P3 P4)")
     ap.add_argument("--no-browser", action="store_true")
     ap.add_argument("--no-stream", action="store_true", help="do not start streaming automatically")
     ap.add_argument("--config", default=str(HERE / "config.json"))
     args = ap.parse_args(argv)
 
     cfg = load_config(Path(args.config))
+    if args.montage == "flow" and cfg.get("labels_8_flow"):
+        cfg["labels_8"] = cfg["labels_8_flow"]
+        log(f"[montage] 8-ch flow montage: {' '.join(cfg['labels_8'])}")
     port = args.port or int(cfg.get("port", 8765))
 
     board = open_board(args, cfg)
     recorder = Recorder(HERE / "sessions", labels=[], meta={})
     pipeline = Pipeline(board, cfg, recorder=recorder, log=log)
     recorder.labels = pipeline.labels
-    recorder.meta = {"board": board.status(), "config": cfg, "server_version": "0.1.0"}
+    from server import SERVER_VERSION
+    recorder.meta = {"board": board.status(), "config": cfg, "server_version": SERVER_VERSION}
 
     bands = BandManager(cfg, on_sample=lambda s: app.on_band(s), sim_board=board if args.sim else None)
-    app = App(pipeline, board, recorder, bands, cfg, log=log)
+    from protocol import ProtocolRunner, load_protocols
+    runner = ProtocolRunner(load_protocols(HERE / "protocols.json"),
+                            on_event=lambda e: app.on_protocol_event(e),
+                            on_mark=lambda k, v, n="": app.on_protocol_mark(k, v, n), log=log)
+    app = App(pipeline, board, recorder, bands, cfg, log=log, protocol=runner)
     band_source = args.band or ("sim" if args.sim else cfg.get("band_source", "supabase"))
     pipeline.set_band_source(band_source)
     try:

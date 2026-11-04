@@ -21,11 +21,14 @@ def read_csv(p: Path):
 
 
 def epoch_rec(t, flow):
-    rec = {"t": t, "flow_eeg": flow, "theta_frontal_rel": 0.21, "alpha_posterior_rel": 0.3,
-           "beta_rel": 0.18, "engagement_index": 0.52, "theta_alpha_ratio": 0.8,
-           "z_theta": 0.4, "z_alpha": -0.1, "z_beta": -0.3, "baseline_ready": True, "n_good": 8}
+    rec = {"t": t, "flow_eeg": flow, "flow_eeg_alt": flow, "artifact": False, "theta_frontal_rel": 0.21,
+           "alpha_cp_rel": 0.3, "beta_rel": 0.18, "engagement_index": 0.52, "theta_alpha_ratio": 0.8,
+           "z_theta": 0.4, "z_alpha": -0.1, "z_beta": -0.3, "baseline_ready": True,
+           "baseline_state": "rest-frozen", "n_good": 8, "frontal_sites": "Fp1,Fp2"}
     for b in ("delta", "theta", "alpha", "beta", "gamma"):
         rec[f"{b}_rel_mean"] = 0.2
+    rec["p2p_uv"] = 42.1
+    rec["n_segments_used"] = 9
     for lab in LABELS:
         rec[f"theta_abs_{lab}"] = 12.5
         rec[f"alpha_abs_{lab}"] = 20.0
@@ -65,13 +68,13 @@ class TestRecorder(unittest.TestCase):
             out = rec.stop()
             self.assertEqual(out, sdir)
             self.assertFalse(rec.active)
-            self.assertEqual(rec.counts, {"eeg": 6, "epochs": 2, "band": 2, "marks": 3})
+            self.assertEqual(rec.counts, {"eeg": 6, "epochs": 2, "band": 2, "marks": 3, "trials": 0})
             st = rec.status()
             self.assertEqual(st["counts"]["eeg"], 6)
             self.assertIsNone(st["since_s"])
             self.assertEqual(st["dir"], str(sdir))
 
-            for name in ("eeg_raw.csv", "epochs.csv", "band.csv", "marks.csv", "session.json"):
+            for name in ("eeg_raw.csv", "epochs.csv", "band.csv", "marks.csv", "task.csv", "session.json"):
                 self.assertTrue((sdir / name).exists(), name)
 
             h, rows = read_csv(sdir / "eeg_raw.csv")
@@ -87,13 +90,18 @@ class TestRecorder(unittest.TestCase):
             self.assertEqual(len(rows), 2)
             self.assertEqual(rows[0][h.index("flow_eeg")], "0.61")
             self.assertEqual(rows[1][h.index("baseline_ready")], "True")
+            self.assertEqual(rows[1][h.index("baseline_state")], "rest-frozen")
+            self.assertEqual(rows[0][h.index("artifact")], "False")
+            self.assertEqual(rows[0][h.index("alpha_cp_rel")], "0.3")
+            self.assertEqual(rows[0][h.index("n_segments_used")], "9")
+            self.assertEqual(rows[0][h.index("frontal_sites")], "Fp1,Fp2")
             self.assertEqual(rows[0][h.index("q_O2")], "good")
             self.assertEqual(rows[0][h.index("theta_abs_Fp1")], "12.5")
 
             h, rows = read_csv(sdir / "band.csv")
-            self.assertEqual(h, ["t", "flow", "hr", "anom", "held", "settling", "fhi"])
-            self.assertEqual(rows[0], [f"{t0 + 1:.3f}", "0.58", "71.5", "0.12", "0", "0", ""])
-            self.assertEqual(rows[1], [f"{t0 + 3:.3f}", "", "", "0.2", "1", "1", "0.4"])
+            self.assertEqual(h, ["t", "flow", "hr", "anom", "held", "settling", "fhi", "asleep", "poor_contact"])
+            self.assertEqual(rows[0], [f"{t0 + 1:.3f}", "0.58", "71.5", "0.12", "0", "0", "", "0", "0"])
+            self.assertEqual(rows[1], [f"{t0 + 3:.3f}", "", "", "0.2", "1", "1", "0.4", "0", "0"])
 
             h, rows = read_csv(sdir / "marks.csv")
             self.assertEqual(h, ["t", "kind", "value", "note"])
@@ -112,6 +120,49 @@ class TestRecorder(unittest.TestCase):
             rec.mark("note", "late")
             self.assertEqual(rec.counts["marks"], 3)
 
+    def test_task_csv(self):
+        with tempfile.TemporaryDirectory() as d:
+            rec = Recorder(Path(d), LABELS, {})
+            rec.trial({"block_index": 1, "condition": "flow", "task": "arithmetic_adaptive"})   # inactive: ignored
+            sdir = rec.start("difficulty_ladder")
+            self.assertEqual(rec.counts["trials"], 0)                   # counter exists from the start
+            t0 = 1762178471.0
+            rec.trial({"t": t0 + 1.5, "block_index": 1, "condition": "flow", "task": "arithmetic_adaptive",
+                       "level": 4, "problem": "23 + 45", "answer": 68, "response": 68, "correct": True,
+                       "rt_ms": 2345})
+            rec.trial({"t": t0 + 9.25, "block_index": 1, "condition": "flow", "task": "arithmetic_adaptive",
+                       "level": 5, "problem": "67 - 29", "answer": 38, "response": 36, "correct": False,
+                       "rt_ms": 4100.5})
+            rec.trial({"t": t0 + 20, "block_index": 3, "condition": "overload", "task": "arithmetic_hard",
+                       "level": 12, "problem": "47 x 83", "answer": 3901, "response": None, "correct": None,
+                       "rt_ms": None})
+            rec.epoch(epoch_rec(t0 + 2, 0.5))
+            rec.stop()
+            self.assertEqual(rec.counts["trials"], 3)
+            self.assertEqual(rec.counts["epochs"], 1)
+            self.assertEqual(rec.status()["counts"]["trials"], 3)
+            h, rows = read_csv(sdir / "task.csv")
+            self.assertEqual(h, ["t", "block_index", "condition", "task", "level", "problem", "answer",
+                                 "response", "correct", "rt_ms"])
+            self.assertEqual(len(rows), 3)
+            self.assertEqual(rows[0], [f"{t0 + 1.5:.3f}", "1", "flow", "arithmetic_adaptive", "4", "23 + 45",
+                                       "68", "68", "1", "2345"])
+            self.assertEqual(rows[1], [f"{t0 + 9.25:.3f}", "1", "flow", "arithmetic_adaptive", "5", "67 - 29",
+                                       "38", "36", "0", "4100.5"])
+            self.assertEqual(rows[2][:4], [f"{t0 + 20:.3f}", "3", "overload", "arithmetic_hard"])
+            self.assertEqual(rows[2][7:], ["", "0", ""])                 # None response / correct / rt -> empty, 0
+            # a trial without t gets a clock stamp
+            rec2 = Recorder(Path(d) / "b", LABELS, {})
+            sdir2 = rec2.start()
+            rec2.trial({"block_index": 0, "task": "arithmetic_easy", "correct": 1})
+            rec2.stop()
+            h, rows = read_csv(sdir2 / "task.csv")
+            self.assertTrue(re.fullmatch(r"\d+\.\d{3}", rows[0][0]))
+            self.assertEqual(rows[0][8], "1")
+            # trials after stop are ignored
+            rec2.trial({"block_index": 0, "correct": 1})
+            self.assertEqual(rec2.counts["trials"], 1)
+
     def test_no_epochs_means_no_epochs_csv(self):
         with tempfile.TemporaryDirectory() as d:
             rec = Recorder(Path(d), LABELS, {})
@@ -120,6 +171,9 @@ class TestRecorder(unittest.TestCase):
             rec.stop()
             self.assertFalse((sdir / "epochs.csv").exists())
             h, rows = read_csv(sdir / "band.csv")
+            self.assertEqual(rows, [])
+            h, rows = read_csv(sdir / "task.csv")                  # task.csv always exists, header only
+            self.assertEqual(h[:3], ["t", "block_index", "condition"])
             self.assertEqual(rows, [])
 
 

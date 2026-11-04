@@ -11,7 +11,8 @@ from collections import deque
 import numpy as np
 
 from cyton import FULL_SCALE_UV
-from dsp import BAND_ORDER, FilterChain, band_powers, psd, quality, relative_powers
+from dsp import (BAND_ORDER, INDEX_BANDS, TOTAL_BAND, FilterChain, band_powers, band_powers_of, psd, quality,
+                 relative_powers, welch)
 from flow_index import FlowIndex
 
 LABELS_8 = ["Fp1", "Fp2", "C3", "C4", "P7", "P8", "O1", "O2"]
@@ -34,6 +35,21 @@ def pearson(x: np.ndarray, y: np.ndarray) -> float | None:
     if sx < 1e-12 or sy < 1e-12:
         return None
     return float(np.corrcoef(x, y)[0, 1])
+
+
+def _avg_ranks(x: np.ndarray) -> np.ndarray:
+    """1-based ranks with ties given their average rank (Spearman convention)."""
+    x = np.asarray(x, float)
+    order = np.argsort(x, kind="stable")
+    ranks = np.empty(len(x), float)
+    i = 0
+    while i < len(x):
+        j = i
+        while j + 1 < len(x) and x[order[j + 1]] == x[order[i]]:
+            j += 1
+        ranks[order[i:j + 1]] = (i + j) / 2.0 + 1.0
+        i = j + 1
+    return ranks
 
 
 def bootstrap_ci(x: np.ndarray, y: np.ndarray, n_boot: int = 500, seed: int = 0):
@@ -70,8 +86,19 @@ class Pipeline:
         self.chain = FilterChain(self.fs, self.n_ch, self.filter_cfg["notch"], self.filter_cfg["bp_lo"], self.filter_cfg["bp_hi"])
         self.epoch_s = float(config.get("epoch_s", 2.0))
         fi = config.get("flow_index", {})
-        self.flow_weights = {"theta": fi.get("theta", 0.5), "alpha": fi.get("alpha", 0.25), "beta": fi.get("beta", 0.25)}
-        self.flow = FlowIndex(self.labels, self.flow_weights, int(fi.get("baseline_epochs", 150)), int(fi.get("warmup_epochs", 15)))
+        from flow_index import DEFAULT_WEIGHTS
+        self.flow_weights = {k: float(fi.get(k, DEFAULT_WEIGHTS[k])) for k in ("theta", "alpha", "beta")}
+        self.flow = FlowIndex(self.labels, self.flow_weights, str(fi.get("baseline_mode", "rest")),
+                              int(fi.get("baseline_epochs", 150)), int(fi.get("warmup_epochs", 15)))
+        self.artifact_p2p_uv = float(fi.get("artifact_p2p_uv", 150.0))
+        self.artifact_abs_uv = float(fi.get("artifact_abs_uv", 100.0))
+        self.analysis_hi_hz = float(fi.get("analysis_hi_hz", 45.0))
+        self.index_window_s = float(fi.get("index_window_s", 10.0))      # Welch window for the index
+        self.index_seg_s = float(fi.get("index_seg_s", 2.0))
+        self.index_min_clean = float(fi.get("index_min_clean_fraction", 0.5))
+        self.blocks: list[dict] = []          # [{index, condition, t0, t1, baseline}], from protocol marks
+        self.ratings: list[dict] = []         # [{t, block, condition, items}]
+        self.trials: list[dict] = []
         hist_s = float(config.get("history_hours", 4)) * 3600
         self.max_hist = int(hist_s / self.epoch_s)
         # filtered sample queue for the browser (drained by the SSE loop)
@@ -140,25 +167,50 @@ class Pipeline:
 
     def _epoch(self) -> None:
         n = int(self.fs * self.epoch_s)
-        raw, t = self.board.buffer.last(n)
-        if len(raw) < n // 2:
+        n_idx = int(self.fs * self.index_window_s)
+        raw_long, t = self.board.buffer.last(max(n, n_idx))
+        if len(raw_long) < n // 2:
             return
         t_end = float(t[-1])
+        raw = raw_long[-n:]
         q = quality(raw, FULL_SCALE_UV)
-        # the spectrum uses a FIXED analysis filter (mains notch + 1-55 Hz), independent of the
+        # the spectra use a FIXED analysis filter (mains notch + 1-45 Hz), independent of the
         # display band-pass, so a 5-50 Hz display setting never removes theta from the flow index
-        chain = FilterChain(self.fs, self.n_ch, self.filter_cfg["notch"], 1.0, min(55.0, self.fs / 2 - 1))
-        pad = np.concatenate([raw[::-1][: n // 2], raw], axis=0)           # warm the filter with a mirror
-        filt = chain.process(pad)[n // 2:]
+        chain = FilterChain(self.fs, self.n_ch, self.filter_cfg["notch"], 1.0, min(self.analysis_hi_hz, self.fs / 2 - 1))
+        pad = np.concatenate([raw_long[::-1][: n // 2], raw_long], axis=0)   # warm the filter with a mirror
+        filt_long = chain.process(pad)[n // 2:]
+        filt = filt_long[-n:]
+        # display spectrum: the last epoch
         f, P = psd(filt, self.fs)
         keep = f <= 60.0
         f, P = f[keep], P[keep]
         ab = band_powers(f, P)
         rel = relative_powers(ab)
         good = [self.enabled[i] and q[i]["state"] == "good" for i in range(self.n_ch)]
-        rec = self.flow.update(rel, ab, good)
-        rec = {"t": round(t_end, 3), **rec}
-        self.eeg_hist.append((t_end, rec["flow_eeg"]))
+        used = [i for i in range(self.n_ch) if good[i]] or list(range(self.n_ch))
+        p2p = float(np.max(filt[:, used].max(axis=0) - filt[:, used].min(axis=0)))
+
+        # index spectrum: Welch over the last index_window_s, dropping artifact segments
+        def reject(seg: np.ndarray) -> bool:
+            s = seg[:, used]
+            return bool(np.max(s.max(axis=0) - s.min(axis=0)) > self.artifact_p2p_uv
+                        or np.abs(s).max() > self.artifact_abs_uv)
+
+        fi, Pi, n_used, n_total = welch(filt_long, self.fs, self.index_seg_s, 0.5, reject)
+        artifact = n_total == 0 or n_used < max(1, int(np.ceil(self.index_min_clean * n_total)))
+        if not artifact:
+            idx_abs = band_powers_of(fi, Pi, {**INDEX_BANDS, "total": TOTAL_BAND})
+            total = idx_abs.pop("total")
+            extra = relative_powers(idx_abs, total)
+            idx_disp = band_powers_of(fi, Pi, {"theta": (4.0, 8.0), "alpha": (8.0, 13.0), "beta": (13.0, 30.0)})
+            rel_idx = {**rel, **relative_powers(idx_disp, total)}      # theta/alpha/beta from the index window
+            abs_idx = {**ab, **idx_disp}
+        else:
+            extra, rel_idx, abs_idx = None, rel, ab
+        rec = self.flow.update(rel_idx, abs_idx, good, artifact=artifact, extra=extra)
+        rec = {"t": round(t_end, 3), **rec, "p2p_uv": round(p2p, 1), "n_segments_used": int(n_used)}
+        if rec["flow_eeg"] is not None:
+            self.eeg_hist.append((t_end, rec["flow_eeg"]))
         analysis = {
             "t": round(t_end, 3),
             "fft": {"freqs": np.round(f, 3).tolist(), "psd": [np.round(P[:, c], 5).tolist() for c in range(self.n_ch)]},
@@ -189,7 +241,8 @@ class Pipeline:
         if self.recorder is not None:
             self.recorder.band({"t": s["t"], "flow": "" if s.get("flow") is None else s["flow"],
                                 "hr": "" if s.get("hr") is None else s["hr"], "anom": s.get("anom", ""),
-                                "held": bool(s.get("held")), "settling": bool(s.get("settling")), "fhi": s.get("fhi")})
+                                "held": bool(s.get("held")), "settling": bool(s.get("settling")), "fhi": s.get("fhi"),
+                                "asleep": bool(s.get("asleep")), "poor_contact": bool(s.get("poor_contact"))})
         usable = (s.get("flow") is not None and not s.get("held") and not s.get("asleep")
                   and not s.get("settling") and not s.get("poor_contact"))
         if usable:
@@ -221,17 +274,111 @@ class Pipeline:
         self.marks.append(m)
         if self.recorder is not None:
             self.recorder.mark(kind, value, note)
+        if kind == "rating":
+            try:
+                import json as _json
+                d = _json.loads(value) if isinstance(value, str) else dict(value)
+                self.ratings.append({"t": m["t"], "block": d.get("block"), "condition": d.get("condition"),
+                                     "items": {k: v for k, v in d.items() if k not in ("block", "condition")}})
+            except (ValueError, TypeError):
+                pass
         self.stats = self._compute_stats()
         return m
+
+    def on_protocol(self, ev: dict) -> None:
+        """Keep the block table (for per-condition stats) from the runner's transitions."""
+        phase = ev.get("phase")
+        if phase == "block_start":
+            self.blocks.append({"index": ev.get("block_index"), "condition": ev.get("condition"),
+                                "t0": time.time(), "t1": None, "baseline": bool(ev.get("baseline"))})
+        elif phase in ("block_end",) and self.blocks and self.blocks[-1]["t1"] is None:
+            self.blocks[-1]["t1"] = time.time()
+        elif phase in ("stopped",) and self.blocks and self.blocks[-1]["t1"] is None:
+            self.blocks[-1]["t1"] = time.time()
+
+    def trial(self, rec: dict) -> None:
+        self.trials.append(rec)
+        if self.recorder is not None:
+            self.recorder.trial(rec)
+
+    def flow_status(self) -> dict:
+        return {"baseline_mode": self.flow.baselines["theta"].mode, "baseline_state": self.flow.baseline_state,
+                "baseline_ready": self.flow.baseline_ready, "epochs": self.flow.n_epochs,
+                "artifact_epochs": self.flow.n_artifact,
+                "artifact_p2p_uv": self.artifact_p2p_uv, "artifact_abs_uv": self.artifact_abs_uv,
+                "weights": self.flow_weights,
+                "frontal_sites": self.flow.last.get("frontal_sites") if self.flow.last else None}
+
+    # --- per-condition (block-level) statistics ------------------------------------
+    def _block_stats(self) -> dict:
+        """Means of the EEG index, the band's flow and the FSS score per block, grouped by
+        condition; the primary validation evidence (blocks are the independent units)."""
+        rows = []
+        for b in self.blocks:
+            if b["condition"] in ("pause",) or b["t0"] is None:
+                continue
+            t0, t1 = b["t0"], b["t1"] or time.time()
+            if t1 - t0 < 30:
+                continue
+            eeg = [v for (t, v) in self.eeg_hist if t0 <= t <= t1 and v is not None]
+            band = [fl for (t, fl, s) in self.band_hist
+                    if t0 <= t <= t1 and fl is not None and not s.get("held") and not s.get("asleep")
+                    and not s.get("settling") and not s.get("poor_contact")]
+            fss = None
+            for r in self.ratings:
+                if r.get("block") == b["index"]:
+                    core = [v for k, v in r["items"].items() if k not in ("demand", "flow_overall")]
+                    fss = float(np.mean(core)) if core else None
+                    felt = r["items"].get("flow_overall")
+                    break
+            else:
+                felt = None
+            rows.append({"index": b["index"], "condition": b["condition"],
+                         "eeg_mean": round(float(np.mean(eeg)), 4) if eeg else None,
+                         "band_mean": round(float(np.mean(band)), 4) if band else None,
+                         "fss_mean": None if fss is None else round(fss, 3),
+                         "felt": felt, "n_eeg": len(eeg), "n_band": len(band)})
+        by: dict[str, list] = {}
+        for r in rows:
+            by.setdefault(r["condition"], []).append(r)
+        conds = []
+        for c, rs in by.items():
+            def m(key):
+                vals = [r[key] for r in rs if r[key] is not None]
+                return round(float(np.mean(vals)), 4) if vals else None
+            conds.append({"condition": c, "n_blocks": len(rs), "eeg_mean": m("eeg_mean"),
+                          "band_mean": m("band_mean"), "fss_mean": m("fss_mean"), "felt_mean": m("felt")})
+        non_task = ("rest", "rest_ec", "pause")
+        ordering = {}
+        for key in ("eeg_mean", "band_mean", "fss_mean"):
+            have = [(c["condition"], c[key]) for c in conds if c[key] is not None and c["condition"] not in non_task]
+            if len(have) >= 2:
+                ordering[key.split("_")[0]] = ">".join(c for c, _ in sorted(have, key=lambda x: -x[1]))
+        # block-level Spearman between EEG and band means over TASK blocks (the pre-registered
+        # block test; tie-aware average ranks, like report.py)
+        pairs = [(r["eeg_mean"], r["band_mean"]) for r in rows
+                 if r["eeg_mean"] is not None and r["band_mean"] is not None and r["condition"] not in non_task]
+        rho = None
+        if len(pairs) >= 4:
+            a = np.array(pairs)
+            rho = pearson(_avg_ranks(a[:, 0]), _avg_ranks(a[:, 1]))
+        return {"rows": rows, "conditions": conds, "ordering": ordering,
+                "block_rho": None if rho is None else round(rho, 3), "n_blocks": len(pairs)}
 
     # --- stats ----------------------------------------------------------------
     def _empty_stats(self) -> dict:
         return {"n_pairs": 0, "r": None, "r_ci": None, "r_last_5min": None, "mae": None,
                 "band_minus_eeg_mean": None, "best_lag_s": None, "r_at_best_lag": None, "lags": [],
-                "felt": {"n": 0, "r_band": None, "r_eeg": None}, "pair_window_s": self.pair_window_s}
+                "felt": {"n": 0, "r_band": None, "r_eeg": None}, "pair_window_s": self.pair_window_s,
+                "blocks": None}
 
     def _compute_stats(self) -> dict:
         st = self._empty_stats()
+        try:
+            st["blocks"] = self._block_stats()
+        except Exception as e:  # noqa: BLE001
+            self.log(f"[pipeline] block stats error: {e!r}")
+            st["blocks"] = None
         if not self.pairs:
             return st
         arr = np.array([(t, b, e) for (t, b, e) in self.pairs], float)

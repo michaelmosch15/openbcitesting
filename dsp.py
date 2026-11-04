@@ -10,6 +10,47 @@ import numpy as np
 BANDS = {"delta": (1.0, 4.0), "theta": (4.0, 8.0), "alpha": (8.0, 13.0),
          "beta": (13.0, 30.0), "gamma": (30.0, 50.0)}
 BAND_ORDER = list(BANDS)
+# the bands the flow index is built on (docs/EEG_FLOW_INDEX.md): frontal-midline theta as
+# used by Katahira 2018 / Ewing 2016, and upper alpha for the exploratory index
+INDEX_BANDS = {"theta_fm": (4.0, 7.0), "alpha_hi": (10.0, 13.0)}
+TOTAL_BAND = (1.0, 45.0)
+
+
+def welch(window: np.ndarray, fs: float, seg_s: float = 2.0, overlap: float = 0.5,
+          reject=None) -> tuple[np.ndarray, np.ndarray, int, int]:
+    """Welch PSD: Hann segments of `seg_s` with `overlap`, averaged. `reject(segment)` -> True
+    drops a segment (artifact). Returns (freqs, PSD [m, n_ch], n_used, n_total)."""
+    n = len(window)
+    seg = int(fs * seg_s)
+    step = max(1, int(seg * (1 - overlap)))
+    if n < seg:
+        f, P = psd(window, fs)
+        return f, P, 1, 1
+    acc = None
+    used = total = 0
+    for start in range(0, n - seg + 1, step):
+        s = window[start:start + seg]
+        total += 1
+        if reject is not None and reject(s):
+            continue
+        f, P = psd(s, fs)
+        acc = P if acc is None else acc + P
+        used += 1
+    if used == 0:
+        f, P = psd(window[:seg], fs)
+        return f, P * np.nan, 0, total
+    return f, acc / used, used, total
+
+
+def band_powers_of(f: np.ndarray, P: np.ndarray, bands: dict) -> dict[str, np.ndarray]:
+    out = {}
+    if len(f) == 0:
+        return {b: np.zeros(P.shape[1] if P.ndim == 2 else 0) for b in bands}
+    df = f[1] - f[0] if len(f) > 1 else 1.0
+    for name, (lo, hi) in bands.items():
+        m = (f >= lo) & (f < hi)
+        out[name] = P[m].sum(axis=0) * df
+    return out
 
 
 class Biquad:
@@ -112,9 +153,13 @@ def band_powers(f: np.ndarray, P: np.ndarray) -> dict[str, np.ndarray]:
     return out
 
 
-def relative_powers(abs_pow: dict[str, np.ndarray]) -> dict[str, np.ndarray]:
-    total = sum(abs_pow[b] for b in BANDS) + 1e-12
-    return {b: abs_pow[b] / total for b in BANDS}
+def relative_powers(abs_pow: dict[str, np.ndarray], total: np.ndarray | None = None) -> dict[str, np.ndarray]:
+    """Band / total power. `total` defaults to the sum of the five display bands (1-50 Hz);
+    pass the 1-45 Hz total for the index bands."""
+    if total is None:
+        total = sum(abs_pow[b] for b in BANDS if b in abs_pow)
+    total = total + 1e-12
+    return {b: abs_pow[b] / total for b in abs_pow}
 
 
 def quality(raw_window: np.ndarray, full_scale_uv: float) -> list[dict]:

@@ -40,6 +40,51 @@
 <!-- ===== Widget grid ===== -->
 <main id="grid">
 
+  <!-- 0. EXPERIMENT (participant-facing: protocol controls, block strip, task area, self-report status) -->
+  <section class="widget" id="wExperiment">
+    <div class="widget-head"><span>Experiment</span><span class="head-right" id="expInfo">—</span></div>
+    <div class="widget-body exp-body">
+      <div class="exp-left">
+        <label class="exp-ctl">Protocol <select id="selProtocol"><option value="">— no protocols —</option></select></label>
+        <div class="exp-btns">
+          <button id="btnProtoStart" class="btn btn-blue" title="build the schedule, start block 0 and start recording">START PROTOCOL</button>
+          <button id="btnProtoStop" class="btn btn-stop" disabled title="abort the protocol (recording keeps running)">STOP</button>
+          <button id="btnProtoNext" class="btn" disabled title="end the current block now">NEXT BLOCK</button>
+        </div>
+        <div id="protoDesc" class="muted exp-desc"></div>
+        <div id="blockStrip" class="block-strip"><span class="muted">schedule appears once the server reports a protocol</span></div>
+      </div>
+      <div class="exp-centre">
+        <div class="exp-top"><span id="expCond" class="cond-tag" hidden><i class="sw"></i><span></span></span><span id="expBlockLabel" class="exp-label">No protocol running</span></div>
+        <div id="expInstruction" class="exp-instr">Pick a protocol on the left and press START PROTOCOL. Recording starts automatically.</div>
+        <div id="expCountdown" class="exp-countdown">--:--</div>
+        <div id="taskArea" class="task-area">
+          <div id="taskIdle" class="task-idle">
+            Timed blocks of rest, easy / matched / overload mental arithmetic and pauses. During a task block a problem appears here:
+            type the answer and press Enter. After each rated block a short questionnaire opens.
+          </div>
+          <div id="taskFix" class="task-fix" hidden><span class="fix-dot"></span></div>
+          <div id="taskArith" class="task-arith" hidden>
+            <div id="taskProblem" class="task-problem">—</div>
+            <div class="task-input-row"><input id="taskInput" type="text" inputmode="numeric" autocomplete="off" spellcheck="false" aria-label="answer" disabled><span id="taskFlash" class="task-flash" aria-live="polite"></span></div>
+            <div class="task-timebar"><div id="taskTimeFill" class="task-timefill"></div></div>
+          </div>
+        </div>
+      </div>
+      <div class="exp-right">
+        <div class="tile"><div class="tile-label">level</div><div class="tile-val" id="tkLevel">—</div></div>
+        <div class="tile"><div class="tile-label">trials</div><div class="tile-val" id="tkTrials">—</div></div>
+        <div class="tile"><div class="tile-label">accuracy</div><div class="tile-val" id="tkAcc">—</div></div>
+        <div class="tile"><div class="tile-label">median RT</div><div class="tile-val" id="tkRt">—</div></div>
+        <div class="exp-rating">
+          <div class="tile-label">self-report</div>
+          <div class="exp-rating-row"><span id="rateBadge" class="tag warn" hidden>rating due</span><span id="rateStatus" class="muted">—</span></div>
+          <button id="btnRate" class="btn btn-blue" hidden>Rate block</button>
+        </div>
+      </div>
+    </div>
+  </section>
+
   <!-- 1. TIME SERIES -->
   <section class="widget" id="wTimeSeries">
     <div class="widget-head"><span>Time series</span><span class="head-right" id="tsInfo">—</span></div>
@@ -97,6 +142,8 @@
           <span class="lg"><i class="sw sw-dash" style="border-color:#0B9C8F"></i>band held</span>
           <span class="lg"><i class="sw sw-mark"></i>felt flow</span>
           <span class="lg"><i class="sw sw-vdash"></i>flow start / end / distracted</span>
+          <span class="lg"><i class="sw sw-band"></i>protocol block (condition colour)</span>
+          <span class="lg"><i class="sw sw-sq"></i>rating</span>
         </div>
         <canvas id="cvFlow" class="cv-260"></canvas>
         <div id="statsRow" class="stats-row">
@@ -108,6 +155,11 @@
           <div class="tile"><div class="tile-label">best lag (s) · r</div><div class="tile-val" id="stLag">—</div></div>
           <div class="tile"><div class="tile-label">felt flow n · r band · r EEG</div><div class="tile-val" id="stFelt">—</div></div>
           <div class="tile tile-lag"><div class="tile-label">r vs lag (s)</div><canvas id="cvLag"></canvas></div>
+          <div class="tile tile-cond">
+            <div class="tile-label">per condition (protocol blocks)</div>
+            <table id="condTable" class="cond-table"><thead><tr><th>condition</th><th class="num">blocks</th><th class="num">EEG mean</th><th class="num">band mean</th><th class="num">FSS mean</th></tr></thead><tbody></tbody></table>
+            <div id="condOrdering" class="cond-ordering">ordering · EEG — · band — · FSS —</div>
+          </div>
         </div>
         <div id="tableWrap" class="table-wrap" hidden>
           <div class="table-tools"><span id="tableInfo" class="muted"></span><button id="btnTableRefresh" class="btn btn-mini">refresh</button></div>
@@ -173,6 +225,20 @@
   <div class="modal-box">
     <div class="modal-head"><span id="modalTitle">Report</span><button id="modalClose" class="btn btn-mini">close</button></div>
     <div id="modalBody" class="modal-body md"></div>
+  </div>
+</div>
+
+<!-- self-report (Flow Short Scale) modal; rows are built by app.js -->
+<div id="ratingModal" class="modal" hidden>
+  <div class="modal-box rating-box">
+    <div class="modal-head"><span id="ratingTitle">Rate block</span><button id="ratingClose" class="btn btn-mini" title="close without storing a rating">dismiss</button></div>
+    <div class="modal-body">
+      <p class="rt-intro muted">Think about the block that just ended. 1 = not at all, 7 = very much. Keys 1–7 answer the highlighted row.</p>
+      <div id="ratingItems"></div>
+      <div class="rt-overall"><span class="rt-text">Overall, how much flow did you feel? (0–1)</span><input id="ratingSlider" type="range" min="0" max="1" step="0.05" value="0.5"><span id="ratingSliderVal" class="rt-val">0.50</span></div>
+      <input id="ratingNote" class="rt-note" type="text" maxlength="200" placeholder="note (optional)">
+      <div class="rt-foot"><span id="ratingMissing" class="muted"></span><button id="ratingSubmit" class="btn btn-blue" disabled>SUBMIT</button></div>
+    </div>
   </div>
 </div>
 
