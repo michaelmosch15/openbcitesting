@@ -340,11 +340,10 @@ def solve(feat: dict, tpl: dict | None = None, slots: list[str] | None = None, w
         if all(a != d[2] for d in distinct):
             distinct.append((c, sg, a))
     # confidence: agreement among the near-optimal distinct solutions (within 10 % of the best
-    # cost, at least the top three) - a channel that every good solution places the same way is
-    # a sure thing, one that flips between neighbours is not
-    near = [d for d in distinct if d[0] <= best_c * 1.10 + 0.01]
-    if len(near) < 3:
-        near = distinct[:3]
+    # cost) - a channel that every good solution places the same way is a sure thing, one that
+    # flips between neighbours is not; with no close runner-up every channel is 1.0 and
+    # `margin` says how far away the runner-up is
+    near = [d for d in distinct if d[0] <= best_c * 1.10 + 0.01] or distinct[:1]
     conf = []
     for i in range(n):
         agree = sum(1 for d in near if d[2][i] == best_a[i])
