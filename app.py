@@ -85,6 +85,13 @@ class BandManager:
                                      on_line=self.on_line)
                 if self.link.tools_dir:
                     log(f"[band] firmware tools: {self.link.tools_dir}")
+            elif source == "usb2":
+                from band_link import BandLinkV2
+                u = self.cfg.get("usb", {})
+                self.link = BandLinkV2(u.get("firmware_v2_tools_dir"), port=port or u.get("port"), log=log,
+                                       on_line=self.on_line)
+                if self.link.tools_dir:
+                    log(f"[band] firmware_v2 tools: {self.link.tools_dir}")
             elif source == "sim":
                 from band_link import SimBandLink
                 if self.sim_board is None:
@@ -155,7 +162,8 @@ def main(argv=None) -> int:
     ap.add_argument("--channels", choices=["auto", "8", "16"], help="force 8 or 16 channels")
     ap.add_argument("--source", choices=["serial", "udp"], help="EEG source: the dongle, or the OpenBCI GUI's UDP stream")
     ap.add_argument("--udp-port", type=int, help="UDP port for --source udp (default 12345)")
-    ap.add_argument("--band", choices=["supabase", "ble", "usb", "sim", "none"], help="where the band's flow comes from")
+    ap.add_argument("--band", choices=["supabase", "ble", "usb", "usb2", "sim", "none"],
+                    help="where the band's flow comes from (usb = v0.6 status lines, usb2 = firmware_v2 datalog rows)")
     ap.add_argument("--user-id", help="Supabase user_id (full uuid) to follow")
     ap.add_argument("--band-name", help="Supabase band name to follow, e.g. BioProxal4")
     ap.add_argument("--ble-address", help="band BLE address (default: first BioProxal* found)")

@@ -226,6 +226,13 @@ def render_live(s: dict) -> str:
         out.append("protocol: none running (free streaming)")
     out.append(f"EEG baseline {fs.get('baseline_state')} epochs={fs.get('epochs')} artifact_epochs={fs.get('artifact_epochs')} "
                f"frontal_sites={fs.get('frontal_sites')}")
+    rd = fs.get("readiness") or {}
+    if rd:
+        out.append(f"EEG readiness: {'READY' if rd.get('ready') else 'NOT READY'} reasons={rd.get('reasons')} "
+                   f"clean_channels={rd.get('clean_channels')} common_mode_corr={rd.get('common_mode_corr')} "
+                   f"artifact_fraction={rd.get('artifact_fraction')} bad={rd.get('bad_channels')} offsets={rd.get('offset_channels')} "
+                   "(reference = the good channels are one shared signal: ear clip not on, or headset not on a head; "
+                   "the index is WITHHELD while reference/few applies)")
     ser = s["eeg_index_10s"]
     if ser:
         out.append(f"EEG flow index, 10-s means oldest->newest (n_epochs={s['eeg_n']}): " + " ".join(_f(v) for v in ser)

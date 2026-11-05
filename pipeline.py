@@ -12,7 +12,7 @@ import numpy as np
 
 from cyton import FULL_SCALE_UV
 from dsp import (BAND_ORDER, INDEX_BANDS, TOTAL_BAND, FilterChain, band_powers, band_powers_of, psd, quality,
-                 relative_powers, welch)
+                 relative_powers, welch, welch_masked)
 from flow_index import FlowIndex
 
 LABELS_8 = ["Fp1", "Fp2", "C3", "C4", "P7", "P8", "O1", "O2"]
@@ -100,6 +100,18 @@ class Pipeline:
         self.index_window_s = float(fi.get("index_window_s", 10.0))      # Welch window for the index
         self.index_seg_s = float(fi.get("index_seg_s", 2.0))
         self.index_min_clean = float(fi.get("index_min_clean_fraction", 0.5))
+        # "channel": each channel keeps its own clean segments and the index uses the channels
+        # that stay >= index_min_clean_fraction clean (needs min_clean_channels); "epoch": a
+        # segment is dropped for everyone when any used channel is noisy (the v0.2 rule)
+        self.artifact_scope = str(fi.get("artifact_scope", "channel"))
+        self.min_clean_channels = int(fi.get("min_clean_channels", 2))
+        self.readiness: dict = {"ready": False, "reasons": ["no data"], "clean_channels": []}
+        self._recent_artifact: deque = deque(maxlen=15)
+        # the index is withheld (flow_eeg null, `gated`) while the good channels are one shared
+        # signal (|corr| >= 0.9: no reference clip, or the headset is not on a head) or fewer
+        # than min_clean_channels are clean - a quiet desk looks "clean" to the artifact rule
+        self.gate_on_readiness = bool(fi.get("gate_on_readiness", True))
+        self.gate_reasons = tuple(fi.get("gate_reasons", ["reference", "few"]))
         self.blocks: list[dict] = []          # [{index, condition, t0, t1, baseline}], from protocol marks
         self.ratings: list[dict] = []         # [{t, block, condition, items}]
         self.trials: list[dict] = []
@@ -216,13 +228,31 @@ class Pipeline:
         p2p = float(np.max(filt[:, used].max(axis=0) - filt[:, used].min(axis=0)))
 
         # index spectrum: Welch over the last index_window_s, dropping artifact segments
-        def reject(seg: np.ndarray) -> bool:
-            s = seg[:, used]
-            return bool(np.max(s.max(axis=0) - s.min(axis=0)) > self.artifact_p2p_uv
-                        or np.abs(s).max() > self.artifact_abs_uv)
+        good_epoch = list(good)
+        clean_channels: list[int] = [i for i in range(self.n_ch) if good[i]]
+        if self.artifact_scope == "channel":
+            def bad(seg: np.ndarray) -> np.ndarray:
+                m = (seg.max(axis=0) - seg.min(axis=0) > self.artifact_p2p_uv) | (np.abs(seg).max(axis=0) > self.artifact_abs_uv)
+                m[[i for i in range(self.n_ch) if not good[i]]] = True
+                return m
+            fi, Pi, used_per_ch, n_total = welch_masked(filt_long, self.fs, self.index_seg_s, 0.5, bad)
+            need = max(1, int(np.ceil(self.index_min_clean * n_total))) if n_total else 1
+            clean_channels = [i for i in range(self.n_ch) if good[i] and used_per_ch[i] >= need]
+            good_epoch = [i in clean_channels for i in range(self.n_ch)]
+            artifact = n_total == 0 or len(clean_channels) < self.min_clean_channels
+            n_used = int(np.median(used_per_ch[clean_channels])) if clean_channels else 0
+            if not artifact:
+                Pi = np.nan_to_num(Pi, nan=0.0)
+        else:
+            def reject(seg: np.ndarray) -> bool:
+                s = seg[:, used]
+                return bool(np.max(s.max(axis=0) - s.min(axis=0)) > self.artifact_p2p_uv
+                            or np.abs(s).max() > self.artifact_abs_uv)
 
-        fi, Pi, n_used, n_total = welch(filt_long, self.fs, self.index_seg_s, 0.5, reject)
-        artifact = n_total == 0 or n_used < max(1, int(np.ceil(self.index_min_clean * n_total)))
+            fi, Pi, n_used, n_total = welch(filt_long, self.fs, self.index_seg_s, 0.5, reject)
+            artifact = n_total == 0 or n_used < max(1, int(np.ceil(self.index_min_clean * n_total)))
+            if artifact:
+                clean_channels = []
         if not artifact:
             idx_abs = band_powers_of(fi, Pi, {**INDEX_BANDS, "total": TOTAL_BAND})
             total = idx_abs.pop("total")
@@ -232,8 +262,15 @@ class Pipeline:
             abs_idx = {**ab, **idx_disp}
         else:
             extra, rel_idx, abs_idx = None, rel, ab
-        rec = self.flow.update(rel_idx, abs_idx, good, artifact=artifact, extra=extra)
-        rec = {"t": round(t_end, 3), **rec, "p2p_uv": round(p2p, 1), "n_segments_used": int(n_used)}
+        self._recent_artifact.append(bool(artifact))
+        self.readiness = self._readiness(q, good, filt, raw, clean_channels)
+        gated = [r for r in self.readiness["reasons"] if r in self.gate_reasons] if self.gate_on_readiness else []
+        if gated and not artifact:
+            artifact = True                     # withheld: no index, no baseline update, no pair
+            extra, rel_idx, abs_idx = None, rel, ab
+        rec = self.flow.update(rel_idx, abs_idx, good_epoch, artifact=artifact, extra=extra)
+        rec = {"t": round(t_end, 3), **rec, "p2p_uv": round(p2p, 1), "n_segments_used": int(n_used),
+               "clean_channels": [self.labels[i] for i in clean_channels], "gated": ",".join(gated) or None}
         if rec["flow_eeg"] is not None:
             self.eeg_hist.append((t_end, rec["flow_eeg"]))
         analysis = {
@@ -244,6 +281,7 @@ class Pipeline:
                       "rel": {b: np.round(rel[b], 4).tolist() for b in BAND_ORDER}},
             "quality": q,
             "enabled": list(self.enabled),
+            "readiness": self.readiness,
             "flow_eeg": rec,
             "band": self.band_view(),
             "stats": self.stats,
@@ -256,6 +294,40 @@ class Pipeline:
                     epoch_rec[f"{b}_abs_{lab}"] = round(float(ab[b][i]), 4)
                 epoch_rec[f"q_{lab}"] = q[i]["state"]
             self.recorder.epoch(epoch_rec)
+
+    def _readiness(self, q: list, good: list, filt: np.ndarray, raw: np.ndarray, clean_channels: list) -> dict:
+        """Why the index is (not) usable right now, in operator terms. Reasons:
+        contact (railed / near / flat channels), reference (the good channels are one shared
+        signal: |corr| >= 0.9 - ear clip), settling (raw offsets above 100 mV, still drifting
+        after a put-on), artifact (>= 80 % of the last 15 epochs rejected), few (fewer clean
+        channels than min_clean_channels)."""
+        reasons, detail = [], {}
+        bad = [self.labels[i] for i in range(self.n_ch) if self.enabled[i] and q[i]["state"] != "good"]
+        if bad:
+            reasons.append("contact"); detail["bad_channels"] = bad
+        gi = [i for i in range(self.n_ch) if good[i]]
+        if len(gi) >= 2:
+            x = filt[:, gi]
+            sd = x.std(axis=0)
+            ok = sd > 1e-6
+            if ok.sum() >= 2:
+                c = np.corrcoef(x[:, ok].T)
+                m = np.abs(c[np.triu_indices(len(c), 1)]).mean()
+                detail["common_mode_corr"] = round(float(m), 2)
+                if m >= 0.9:
+                    reasons.append("reference")
+        off = [self.labels[i] for i in gi if np.abs(raw[:, i]).max() > 100000.0]
+        if off:
+            reasons.append("settling"); detail["offset_channels"] = off
+        if len(self._recent_artifact) >= 5:
+            fr = sum(self._recent_artifact) / len(self._recent_artifact)
+            detail["artifact_fraction"] = round(fr, 2)
+            if fr >= 0.8:
+                reasons.append("artifact")
+        if len(clean_channels) < self.min_clean_channels:
+            reasons.append("few")
+        return {"ready": not reasons, "reasons": reasons, "clean_channels": [self.labels[i] for i in clean_channels],
+                "n_clean": len(clean_channels), **detail}
 
     # --- band path (band-link thread) -------------------------------------------
     def on_band(self, s: dict) -> None:
@@ -272,7 +344,7 @@ class Pipeline:
                 rec[k] = s.get(k)
             self.recorder.band(rec)
         usable = (s.get("flow") is not None and not s.get("held") and not s.get("asleep")
-                  and not s.get("settling") and not s.get("poor_contact"))
+                  and not s.get("settling") and not s.get("poor_contact") and s.get("usable") is not False)
         if usable:
             eeg = self._eeg_mean(s["t"] - self.pair_window_s, s["t"])
             if eeg is not None:
@@ -289,7 +361,7 @@ class Pipeline:
             return None
         v = {k: s.get(k) for k in ("t", "flow", "hr", "anom", "mode", "held", "settling", "asleep", "poor_contact",
                                    "flow_state", "window", "band", "source", "risk", "battery_mv", "learn_pct",
-                                   "low_battery", "user_id", *BAND_EXTRA)}
+                                   "low_battery", "user_id", "usable", "no_reading", *BAND_EXTRA)}
         v["band"] = v.get("band") or s.get("unit")
         v["user_id_short"] = (s.get("user_id") or "")[:8] or None
         v.pop("user_id", None)
@@ -334,6 +406,8 @@ class Pipeline:
                 "baseline_ready": self.flow.baseline_ready, "epochs": self.flow.n_epochs,
                 "artifact_epochs": self.flow.n_artifact,
                 "artifact_p2p_uv": self.artifact_p2p_uv, "artifact_abs_uv": self.artifact_abs_uv,
+                "artifact_scope": self.artifact_scope, "min_clean_channels": self.min_clean_channels,
+                "readiness": self.readiness,
                 "weights": self.flow_weights,
                 "frontal_sites": self.flow.last.get("frontal_sites") if self.flow.last else None}
 

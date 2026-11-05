@@ -58,7 +58,9 @@ class SupabaseClient:
         self.url, self.key, self.timeout = url, key, timeout
 
     def get(self, table: str, params: dict) -> list[dict]:
-        q = urllib.parse.urlencode(params, safe="*,.:()+-")
+        # "+" must be percent-encoded: a created_at of ...+00:00 sent raw is decoded as a space
+        # by PostgREST ("invalid input syntax for type timestamp", seen live 2026-11-05)
+        q = urllib.parse.urlencode(params, safe="*,.:()-")
         req = urllib.request.Request(f"{self.url}/rest/v1/{table}?{q}",
                                      headers={"apikey": self.key, "Authorization": f"Bearer {self.key}",
                                               "Accept": "application/json"})
@@ -88,10 +90,15 @@ class SupabaseClient:
 def row_to_sample(r: dict) -> dict:
     fs = int(r.get("flow_state") or 0)
     flow = r.get("flow_score")
+    hrv_valid = r.get("hrv_valid")
+    no_reading = None
+    if flow is not None and float(flow) == 0.0 and hrv_valid is False:
+        no_reading = "flow not computed yet (HRV not valid)"     # a cold-start 0, not a low flow
     return {
         "t": iso_to_epoch(r["sampled_at"]),
         "t_created": iso_to_epoch(r["created_at"]) if r.get("created_at") else None,
-        "flow": None if flow is None else float(flow),
+        "flow": None if (flow is None or no_reading) else float(flow),
+        "no_reading": no_reading, "hrv_valid": hrv_valid,
         "flow_state": fs,
         "window": WINDOW_STATES.get(fs, str(fs)),
         "hr": None,

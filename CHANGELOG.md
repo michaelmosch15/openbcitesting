@@ -53,6 +53,27 @@ All notable changes to this project are documented here. The format follows
   by a production band - this is every derived value the band computes, per second.
 - `--montage frontal` (`labels_8_frontal`: Fp1 Fp2 AF3 AF4 F3 F4 F7 F8) for the headset as
   built: all eight combs across the forehead band.
+- Band source `usb2` (`band_link.BandLinkV2`): a firmware_v2 band on USB, authenticated with
+  the firmware_v2 tools, newest datalog row polled every 2 s (`'T'` frame, 32-byte row:
+  HR, SpO2, SDNN, RMSSD, resp, PI, anomaly, risk, flow, battery, mode, phase, flags, IR DC,
+  LED, rate); the same sample shape as the v0.6 status line, `band_console.log` gets one
+  synthetic line per row. `--band usb2`, panel option, `usb.firmware_v2_tools_dir`.
+- Fixed: Supabase polling sent the `created_at` cursor with a raw `+00:00`, which PostgREST
+  decoded as a space (HTTP 400 "invalid input syntax for type timestamp") after the first
+  backfill, so live rows never arrived; `+` is percent-encoded now.
+- Index guards from the first worn session (ADR-12, `docs/EEG_FLOW_INDEX.md` 13b/13c):
+  per-channel artifact scope (`flow_index.artifact_scope` = `channel`, `min_clean_channels`
+  = 2; `dsp.welch_masked`), a readiness verdict every epoch (`analysis.readiness`:
+  `contact`, `reference`, `settling`, `artifact`, `few` with details; banner in the flow
+  widget; in Astra's snapshot) and a gate (`gate_on_readiness`, `gate_reasons`) that
+  withholds the index (`flow_eeg.gated`) while the good channels are one shared signal or
+  too few are clean - a headset on a desk or without its ear clip no longer scores.
+  `tools/replay_eeg.py` replays a recorded session through the pipeline under either scope;
+  `tools/session_diagnose.py` reports per-channel noise, correlation, clean fraction and CAR.
+- Band "no reading" semantics: a firmware_v2 row or Supabase row with flow 0.0 while HRV is
+  not valid is a cold-start "not computed", not a flow of 0.00 - `flow` is null,
+  `no_reading` says why, the tiles show "no reading"; Supabase `usable = false` rows are
+  never paired.
 - `autocal.py` + `edfread.py` + `tools/build_autocal_template.py` + `autocal_template.json`:
   auto-calibration of electrode placement. A 75-s guided capture (rest 30 s, blinks 16 s,
   left/right eye movements 16 s, jaw clench 6 s) gives per-channel blink amplitude, signed

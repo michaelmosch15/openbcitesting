@@ -38,7 +38,7 @@ All responses `application/json`. Errors: `{"ok": false, "error": "<message>"}` 
 | `mark` | `kind` one of `felt_flow` (value 0-1 from the slider), `flow_start`, `flow_end`, `distracted`, `note` (value = text), `note` (optional) | writes `marks.csv` when recording, always appended to history |
 | `set_filter` | `notch` 0/50/60, `bp_lo` Hz, `bp_hi` Hz | rebuilds the display filter chain |
 | `set_channel` | `index` 0-based, `enabled` bool | an excluded channel is not drawn in FFT/band/head widgets and is left out of the EEG flow index |
-| `set_band_source` | `source` one of `supabase`, `ble`, `usb`, `sim`, `none`; `user_id` (full uuid) and/or `band` (e.g. `BioProxal4`) for supabase; `address` for ble; `port` for usb | restarts the band link |
+| `set_band_source` | `source` one of `supabase`, `ble`, `usb` (v0.6 status lines), `usb2` (firmware_v2 datalog rows), `sim`, `none`; `user_id` (full uuid) and/or `band` (e.g. `BioProxal4`) for supabase; `address` for ble; `port` for usb | restarts the band link |
 | `set_flow_weights` | `theta`, `alpha`, `beta` (floats) | EEG flow index weights (see `flow_index.py`); takes effect on the next epoch |
 
 ## Server-sent events: `GET /events`
@@ -193,6 +193,19 @@ and `ratings` inside `marks.csv` (kind `rating`, value = JSON). `report.py` scor
 `band.csv` carries the vitals columns after `poor_contact` (`spo2, pi, rmssd, sdnn, rr,
 flow_raw, base_hr, phase, uptime_s, flow_open5, flow_end5`, blank when the source has none)
 and `band_console.log` holds every USB console line as `<t_host> <line>`.
+
+## Readiness and the index gate (v0.3)
+
+`analysis.readiness` (and `status.flow_index.readiness`) every epoch:
+```json
+{"ready": false, "reasons": ["contact", "reference"], "clean_channels": ["Fp2", "AF4"], "n_clean": 2,
+ "bad_channels": ["Fp1", "F3"], "common_mode_corr": 0.97, "offset_channels": ["F7"], "artifact_fraction": 0.87}
+```
+`analysis.flow_eeg` adds `clean_channels` (the channels the index was computed over) and
+`gated` (null, or the readiness reason that withheld the epoch: `reference` / `few`; a gated
+epoch has `flow_eeg` null and `artifact` true). Band samples add `no_reading` (null or a
+reason: the band published 0.0 before HRV was valid) and `usable` (Supabase); a sample with
+either set is never paired.
 
 ## Auto-calibration of electrode placement (v0.3, `autocal.py`)
 

@@ -805,10 +805,28 @@ const statsTiles = {
     const tagHtml = artifact ? '<span class="tag warn">' + (isNum(store.lastEegFlow) ? 'artifact' : 'no index') + '</span> ' : '';
     const segs = fe && isNum(fe.n_segments_used) ? fe.n_segments_used + '/5 clean segments' : '';
     const base = fe ? (fe.baseline_ready === false ? 'learning baseline…' : (isNum(fe.n_good) ? fe.n_good + ' good channels' : '')) : (store.connected ? 'no epoch yet' : '');
-    $('tileEegSub').innerHTML = tagHtml + esc([base, segs].filter(Boolean).join(' · '));
+    const gatedTag = fe && fe.gated ? '<span class="tag bad">withheld: ' + esc(fe.gated) + '</span> ' : '';
+    $('tileEegSub').innerHTML = (gatedTag || tagHtml) + esc([base, segs, fe && Array.isArray(fe.clean_channels) && fe.clean_channels.length ? 'clean: ' + fe.clean_channels.join(' ') : ''].filter(Boolean).join(' · '));
+    // readiness banner: why the index is (not) being scored, in operator terms
+    const rd = a && a.readiness;
+    const banner = $('readyBanner');
+    if (rd && Array.isArray(rd.reasons)) {
+      const text = {
+        contact: 'contact: ' + ((rd.bad_channels || []).join(' ') || 'a channel') + ' railed / near / flat (re-seat, or disable it)',
+        reference: 'reference: the good channels are one shared signal (|corr| ' + (isNum(rd.common_mode_corr) ? rd.common_mode_corr.toFixed(2) : '≥0.9') + ') - SRB2 / BIAS ear clip not on, or the headset is not on a head',
+        settling: 'settling: ' + ((rd.offset_channels || []).join(' ') || 'channels') + ' still above 100 mV offset (wait 2-5 min)',
+        artifact: 'artifact: ' + (isNum(rd.artifact_fraction) ? Math.round(rd.artifact_fraction * 100) + ' %' : 'most') + ' of the last 15 epochs rejected (movement, jaw, loose combs)',
+        few: 'few: only ' + (isNum(rd.n_clean) ? rd.n_clean : 0) + ' clean channel(s), need 2',
+      };
+      banner.hidden = false;
+      banner.className = 'ready-banner' + (rd.ready ? ' ok' : '');
+      banner.innerHTML = rd.ready
+        ? '<b>EEG ready</b>' + esc('index scored on ' + (rd.clean_channels || []).join(' ') + (isNum(rd.common_mode_corr) ? ' · channel |corr| ' + rd.common_mode_corr.toFixed(2) : ''))
+        : '<b>EEG not scored</b>' + esc(rd.reasons.map((r) => text[r] || r).join(' · '));
+    } else banner.hidden = true;
     const b = store.band;
-    $('tileBand').textContent = b && isNum(b.flow) ? b.flow.toFixed(2) : '—';
-    $('tileBandSub').textContent = b ? [b.held ? 'held' : '', b.settling ? 'settling' : '', isNum(b.age_s) ? fmtAge(b.age_s) + ' ago' : ''].filter(Boolean).join(' · ') : 'no band sample';
+    $('tileBand').textContent = b && isNum(b.flow) ? b.flow.toFixed(2) : (b && b.no_reading ? 'no reading' : '—');
+    $('tileBandSub').textContent = b ? [b.no_reading ? b.no_reading : '', b.usable === false ? 'not usable' : '', b.held ? 'held' : '', b.settling ? 'settling' : '', isNum(b.age_s) ? fmtAge(b.age_s) + ' ago' : ''].filter(Boolean).join(' · ') : 'no band sample';
   },
   /** Per-condition mini table from analysis.stats.blocks: {rows, conditions:[...], ordering, block_rho, n_blocks}
    *  (fallbacks: {blocks:[...]} or the bare per-condition array with stats.ordering). */
@@ -886,11 +904,13 @@ const bandPanel = {
   tag(text, cls) { return '<span class="tag' + (cls ? ' ' + cls : '') + '">' + esc(text) + '</span>'; },
   update() {
     const b = store.band, sb = store.status && store.status.band ? store.status.band : null;
-    $('bpFlow').textContent = b && isNum(b.flow) ? b.flow.toFixed(2) : '—';
+    $('bpFlow').textContent = b && isNum(b.flow) ? b.flow.toFixed(2) : (b && b.no_reading ? 'no reading' : '—');
     let tags = '';
     if (b) {
       if (b.held) tags += this.tag('held', 'warn');
       if (b.settling) tags += this.tag('settling');
+      if (b.no_reading) tags += this.tag('no reading', 'warn');
+      if (b.usable === false) tags += this.tag('not usable', 'warn');
       if (b.poor_contact) tags += this.tag('poor contact', 'bad');
       if (b.asleep) tags += this.tag('asleep');
       if (b.low_battery) tags += this.tag('low battery', 'warn');

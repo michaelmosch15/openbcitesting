@@ -135,6 +135,7 @@
           <button id="btnTable" class="btn btn-mini">validation table</button>
         </span></div>
       <div class="widget-body">
+        <div id="readyBanner" class="ready-banner" hidden></div>
         <div class="tiles-big">
           <div class="tile-big"><div class="tile-label">Helmet (EEG) flow</div><div id="tileEeg" class="tile-num">—</div><div id="tileEegSub" class="tile-sub"></div></div>
           <div class="tile-big"><div class="tile-label">Band flow</div><div id="tileBand" class="tile-num">—</div><div id="tileBandSub" class="tile-sub"></div></div>
@@ -190,7 +191,7 @@
             <dt>link</dt><dd id="bpLink">—</dd>
           </dl>
           <div class="band-ctls">
-            <label>Source <select id="selSource"><option value="supabase">supabase</option><option value="ble">ble</option><option value="usb">usb</option><option value="sim">sim</option><option value="none">none</option></select></label>
+            <label>Source <select id="selSource"><option value="supabase">supabase</option><option value="ble">ble</option><option value="usb">usb (v0.6 band)</option><option value="usb2">usb2 (firmware_v2 band)</option><option value="sim">sim</option><option value="none">none</option></select></label>
             <label id="wearerRow">Wearer <select id="selWearer"><option value="">— select —</option></select><button id="btnWearers" class="btn btn-mini" title="reload wearers">↻</button></label>
             <div id="seenList" class="seen" hidden></div>
           </div>

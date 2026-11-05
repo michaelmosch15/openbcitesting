@@ -26,6 +26,7 @@ from __future__ import annotations
 
 import os
 import re
+import struct
 import sys
 import threading
 import time
@@ -250,6 +251,173 @@ class BandLink:
     def status(self) -> dict:
         st = dict(self.state)
         st["last_line_age_s"] = round(time.time() - self._last_line_t, 1) if self._last_line_t else None
+        return st
+
+    def console_tail(self, n: int = 40) -> list:
+        return [[round(t, 3), ln] for (t, ln) in list(self.console)[-n:]]
+
+
+def find_tools_dir_v2(configured: str | None, start: Path = HERE) -> Path | None:
+    """The firmware_v2 tools folder (live_usb.py + its offload.py): configured, else
+    <ancestor>/firmware_v2/.claude/worktrees/*/tools or <ancestor>/firmware_v2/tools."""
+    if configured:
+        p = Path(configured).expanduser()
+        if not p.is_absolute():
+            p = (start / p).resolve()
+        if (p / "live_usb.py").exists():
+            return p
+    for d in [start, *start.parents]:
+        fw = d / "firmware_v2"
+        if not fw.is_dir():
+            continue
+        cands = [fw / "tools"]
+        wt = fw / ".claude" / "worktrees"
+        if wt.is_dir():
+            cands = [sub / "tools" for sub in sorted(wt.iterdir(), reverse=True)] + cands
+        for c in cands:
+            if (c / "live_usb.py").exists() and (c / "offload.py").exists():
+                return c
+    return None
+
+
+def _load_module(path: Path, name: str):
+    import importlib.util
+    spec = importlib.util.spec_from_file_location(name, path)
+    mod = importlib.util.module_from_spec(spec)
+    if str(path.parent) not in sys.path:
+        sys.path.insert(0, str(path.parent))
+    spec.loader.exec_module(mod)
+    return mod
+
+
+DATALOG_ROW = struct.Struct("<IhhhhhhHHHHBBBBHBB")      # firmware_v2 DatalogRow, 32 B (tools/live_usb.py)
+
+
+def decode_v2_row(row: bytes, t: float | None = None) -> dict:
+    """One firmware_v2 datalog row -> the same sample shape the status line gives."""
+    (up, hr, spo2, sdnn, rmssd, resp, pi, an, rk, fl, mv, mode, phase, flags, qual, dcq, led, cfg) = DATALOG_ROW.unpack(row[:32])
+    no_flow = bool(flags & 0x20)
+    hrv_ok = bool(flags & 0x01)
+    mode_s = "HIGH" if mode == 1 else "LOW"
+    # a 0.0000 published while HRV is not yet valid (cold start, first minutes on the wrist) is
+    # "not computed", not a low flow: the dashboard shows "no reading" and nothing is paired
+    no_reading = None
+    if no_flow:
+        no_reading = "band reports no flow reading"
+    elif fl == 0 and (not hrv_ok or sdnn == 0):
+        no_reading = "flow not computed yet (HRV not valid)"
+    s = {"t": time.time() if t is None else t, "uptime_s": up, "mode": mode_s, "phase": phase, "source_line": "v2row",
+         "hr": hr / 10 if hr > 0 else None, "spo2": spo2 / 10 if spo2 > 0 else None, "sdnn": sdnn / 10, "rmssd": rmssd / 10,
+         "rr": resp / 10, "pi": pi / 100, "anom": an / 10000, "risk": rk / 10000,
+         "flow": None if no_reading else fl / 10000, "flow_raw": fl / 10000, "base_hr": None, "no_reading": no_reading,
+         "battery_mv": mv, "held": mode == 1, "asleep": bool(flags & 0x04), "poor_contact": bool(flags & 0x08),
+         "settling": False, "hrv_ok": hrv_ok, "quality": qual, "ir_dc": dcq * 8, "led": led & 0x7F,
+         "rate_hz": 100 if (cfg >> 5) & 1 else 25, "flow_open5": None, "flow_end5": None}
+    return s
+
+
+class BandLinkV2:
+    """USB link to a firmware_v2 band: authenticates with the firmware_v2 tools, then polls
+    the newest datalog row ('T' frame, n = 1) every `poll_s`; the band writes a row every 2 s.
+    Same read-only promise: nothing is cleared, flashed or reset."""
+
+    def __init__(self, tools_dir: str | Path | None, port: str | None = None, log=print, poll_s: float = 2.0, on_line=None):
+        self.tools_dir = find_tools_dir_v2(str(tools_dir) if tools_dir else None)
+        self.port, self.log, self.poll_s, self.on_line = port, log, float(poll_s), on_line
+        self.state = {"connected": False, "port": None, "unit": None, "mac": None, "error": None,
+                      "last_line_age_s": None, "lines": 0, "battery_mv": None, "transport": "usb2"}
+        self.latest = None
+        self.listeners = []
+        self.console: deque = deque(maxlen=CONSOLE_KEEP)
+        self._stop = threading.Event()
+        self._thread = None
+        self._mod = None
+        self._last_t = 0.0
+        self._last_up = -1
+
+    def _tools(self):
+        if self._mod is None:
+            if not self.tools_dir:
+                raise RuntimeError("firmware_v2 tools not found (set usb.firmware_v2_tools_dir to <firmware_v2>/tools)")
+            self._mod = _load_module(self.tools_dir / "offload.py", "bpx2_offload")
+        return self._mod
+
+    def start(self) -> None:
+        self._stop.clear()
+        self._thread = threading.Thread(target=self._run, name="band-v2", daemon=True)
+        self._thread.start()
+
+    def stop(self) -> None:
+        self._stop.set()
+        if self._thread:
+            self._thread.join(3.0)
+
+    def _run(self) -> None:
+        backoff = 2.0
+        while not self._stop.is_set():
+            ser = None
+            try:
+                O = self._tools()
+                port = self.port
+                if port is None:
+                    from serial.tools import list_ports
+                    ports = [p.device for p in list_ports.comports() if (p.vid or 0) == 0x303A]
+                    if not ports:
+                        raise RuntimeError("no BioProxal band on USB (ESP32-S3 port not found)")
+                    port = ports[0]
+                ser = O.open_port(port)
+                st = O.authenticate(ser, quiet=True)
+                self.state.update({"connected": True, "port": port, "error": None, "mac": st.get("mac"),
+                                   "unit": f"band {st.get('mac', '')[-5:]}" if st.get("mac") else "band"})
+                self.log(f"[band] {port} firmware_v2 session open ({self.state['unit']}), polling the datalog every {self.poll_s:.0f} s")
+                backoff = 2.0
+                while not self._stop.is_set():
+                    try:
+                        payload = O.request(ser, "T", struct.pack("<H", 1), marker_timeout=5.0)
+                    except Exception as e:  # noqa: BLE001
+                        if "locked" in str(e).lower():
+                            O.authenticate(ser, quiet=True)
+                            continue
+                        raise
+                    if len(payload) >= 32:
+                        s = decode_v2_row(payload[-32:])
+                        self._last_t = s["t"]
+                        if s["uptime_s"] != self._last_up:
+                            self._last_up = s["uptime_s"]
+                            self.state["lines"] += 1
+                            self.state["battery_mv"] = s["battery_mv"]
+                            line = (f"[v2 {s['uptime_s']}s] mode={s['mode']} phase={s['phase']} HR={s['hr']} SpO2={s['spo2']} "
+                                    f"RMSSD={s['rmssd']} SDNN={s['sdnn']} PI={s['pi']} RR={s['rr']} anom={s['anom']} risk={s['risk']} "
+                                    f"flow={s['flow']} batt={s['battery_mv']} ir_dc={s['ir_dc']} led={s['led']}")
+                            self.console.append((s["t"], line))
+                            if self.on_line is not None:
+                                try:
+                                    self.on_line(s["t"], line)
+                                except Exception:  # noqa: BLE001
+                                    pass
+                            self.latest = s
+                            for fn in list(self.listeners):
+                                try:
+                                    fn(s)
+                                except Exception as e:  # noqa: BLE001
+                                    self.log(f"[band] listener error: {e!r}")
+                    self._stop.wait(self.poll_s)
+            except Exception as e:  # noqa: BLE001
+                self.state.update({"connected": False, "error": f"{type(e).__name__}: {e}"})
+                self.log(f"[band] {e}")
+                self._stop.wait(backoff)
+                backoff = min(backoff * 1.5, 20.0)
+            finally:
+                if ser is not None:
+                    try:
+                        ser.close()
+                    except Exception:  # noqa: BLE001
+                        pass
+        self.state["connected"] = False
+
+    def status(self) -> dict:
+        st = dict(self.state)
+        st["last_line_age_s"] = round(time.time() - self._last_t, 1) if self._last_t else None
         return st
 
     def console_tail(self, n: int = 40) -> list:

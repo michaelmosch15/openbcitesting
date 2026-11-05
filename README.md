@@ -79,6 +79,7 @@ the research review: `docs/EEG_FLOW_LITERATURE.md`.
 | Source | Path | Cadence | Use when |
 |---|---|---|---|
 | `supabase` (default) | band -> Amplifly phone app (BLE) -> Supabase `wearable_samples` -> polled every 5 s (`supabase_link.py`) | 1 row/min (5-6 per 6-min block) | The normal deployment path. Needs `%USERPROFILE%\.bioproxal\supabase.env` with `SUPABASE_URL` and a key. Pick the wearer in the band panel. |
+| `usb2` | a **firmware_v2** band on a cable: the firmware_v2 tools authenticate and the newest datalog row (`'T'` frame: HR, SpO2, SDNN, RMSSD, resp, PI, anomaly, risk, flow, battery, mode, phase, contact flags, IR DC, LED) is polled every 2 s (`BandLinkV2`) | every 2 s | Bands flashed with the ESP-IDF rewrite (their console prints only BLE log lines). Tools found at `<ancestor>/firmware_v2/.claude/worktrees/*/tools` or `firmware_v2/tools`, or set `usb.firmware_v2_tools_dir`. Read-only. |
 | `ble` | band -> this laptop with `bleak` (`band_ble.py`) | every 2 s | Finer resolution. The band allows one BLE connection: close the Amplifly app first. Nothing is written to the band. |
 | `usb` | band on a cable through the firmware repo's tools (`band_link.py`) | every 1 s | The band's whole console once unlocked: HR, SpO2, RMSSD, SDNN, perfusion, respiration, anomaly, risk, published flow, base HR, raw flow, forecast heads, battery, mode / phase. Needs `%USERPROFILE%\.bioproxal\master.key`; the firmware tools are found at `<ancestor>/worktrees/v0629/tools` or set `usb.bioproxal_tools_dir`. Read-only; every line is kept (`band_console.log`, band panel console). Raw red/IR PPG is not exported by a production band. |
 | `sim` | synthetic | every 2 s | With `--sim`: the simulator's hidden state, which follows the protocol's conditions, plus noise and a 20-s lag. |
@@ -158,6 +159,9 @@ controls change only the display, never the index.
 | 16-ch labels look swapped | Flip `daisy_even_is_upper` in `config.json`. |
 | Supabase `HTTP 401` / no rows | Key in `%USERPROFILE%\.bioproxal\supabase.env`; project paused or phone app not uploading - check `/api/wearers`. |
 | BLE "no 'BioProxal*' band advertising" | The band is connected to the phone; close the Amplifly app or turn the phone's Bluetooth off. |
+| Flow widget says **EEG not scored: reference** | The good channels are one shared signal (|corr| >= 0.9): the SRB2 reference and BIAS ear clips are not on the earlobes, or the headset is on a desk. Clip them on; the banner turns green when the channels decorrelate. A desk never scores. |
+| Flow widget says **not scored: artifact / few** | Movement, jaw, loose combs: fewer than 2 channels stay under 150 uV p2p. Sit still, re-seat combs; `tools/session_diagnose.py sessions/<x>` shows per-channel clean fractions. |
+| Band shows **no reading** | The band published 0.0 before its HRV was valid (first minutes on the wrist, cold start). Wait; it is not a flow of 0. |
 | Flow index stuck at 0.5 | First 15 epochs (30 s), or every epoch is an artifact (`artifact_epochs` in the flow widget rising): blinks, movement, bad contact. |
 | `baseline_state` never `rest-frozen` | The rest block had fewer than 15 clean epochs. The session is INCONCLUSIVE; fix contact / stillness and run again. |
 | `frontal_sites` shows `Fp1,Fp2` | Factory montage labels. Move the electrodes and start with `--montage flow`, or accept an Fp-only session and label it so. |

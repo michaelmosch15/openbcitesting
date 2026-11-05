@@ -25,7 +25,8 @@
   },
   "usb": {
     "port": null,
-    "bioproxal_tools_dir": null
+    "bioproxal_tools_dir": null,
+    "firmware_v2_tools_dir": null
   },
   "labels_8_frontal": ["Fp1", "Fp2", "AF3", "AF4", "F3", "F4", "F7", "F8"],
   "autocal": {
@@ -43,13 +44,18 @@
     "analysis_hi_hz": 45.0,
     "index_window_s": 10.0,
     "index_seg_s": 2.0,
-    "index_min_clean_fraction": 0.5
+    "index_min_clean_fraction": 0.5,
+    "artifact_scope": "channel",
+    "min_clean_channels": 2,
+    "gate_on_readiness": true,
+    "gate_reasons": ["reference", "few"]
   },
   "labels_8_flow": ["Fz", "F3", "F4", "Cz", "C3", "C4", "P3", "P4"],
   "pair_window_s": {
     "supabase": 60,
     "ble": 10,
     "usb": 10,
+    "usb2": 10,
     "sim": 10
   },
   "history_hours": 4,

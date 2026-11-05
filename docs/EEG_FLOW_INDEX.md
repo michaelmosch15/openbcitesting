@@ -105,6 +105,20 @@ the 16-channel Daisy.
     transients. The 50 % clean-segment rule is per epoch; the per-block rule (< 50 %
     clean epochs = block excluded) is in `docs/VALIDATION_PROTOCOL.md`. The literature
     file suggested 60 % per block; the pre-registered value is 50 %.
+13b. **v0.3 change after the first worn session (2026-11-05, ADR-12):** the rejection is
+    per channel (`artifact_scope` = `channel`): each channel averages its own clean
+    segments, a channel is clean for the epoch when >= 50 % of its segments are clean, and
+    the index is computed over the clean channels when at least `min_clean_channels` = 2
+    remain (the frontal mean in 2.3 runs over those). The v0.2 behaviour (one noisy channel
+    drops the segment for everyone) is `artifact_scope` = `epoch`. In the first worn session
+    39 % of segments were clean on every channel but 92 % on two or more.
+13c. **Readiness gate (`gate_on_readiness`, ADR-12):** the index is **withheld** (`flow_eeg`
+    null, `artifact` true, `gated` = reason, nothing enters `eeg_hist`, pairs or the
+    baseline) while the good channels are one shared signal (mean |corr| of the 2-s
+    filtered epoch >= 0.9: the SRB2 / BIAS clip is not on, or the headset is on a desk - a
+    quiet desk passes the amplitude rule) or fewer than `min_clean_channels` are clean.
+    `analysis.readiness` lists every reason (`contact`, `reference`, `settling`, `artifact`,
+    `few`) and the dashboard shows it. The gate changes what is scored, never how.
 14. Not implemented (so not claimed): ICA / ASR blink removal, EMG gating by 20-40 Hz
     power, interpolation of a railed channel from its homologue. Blink energy that stays
     under 100 uV passes the rule; see 2.6 and 5.

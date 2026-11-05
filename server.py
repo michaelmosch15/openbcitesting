@@ -198,8 +198,11 @@ class App:
             return {"flow_weights": p.flow_weights}
         if action == "set_band_source":
             src = str(body.get("source") or "none")
+            if src not in ("supabase", "ble", "usb", "usb2", "sim", "none"):
+                raise ValueError(f"unknown band source {src!r}")
             self.bands.switch(src, user_id=body.get("user_id"), band=body.get("band"),
                               address=body.get("address"), port=body.get("port"))
+            p.set_band_source(src)
             return {"band": self.bands.status()}
         if action in ("protocol_start", "protocol_stop", "protocol_next", "rating", "trial"):
             if self.protocol is None:

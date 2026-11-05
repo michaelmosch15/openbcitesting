@@ -88,6 +88,33 @@ class TestToolsDir(unittest.TestCase):
             self.assertEqual(B.find_tools_dir("nope/tools", start=proj), tools)      # bad config -> walk-up
 
 
+class TestV2Row(unittest.TestCase):
+    def test_decode_row(self):
+        import struct
+        row = struct.pack("<IhhhhhhHHHHBBBBHBB", 1234, 865, 970, 500, 420, 150, 123, 6641, 0, 4200, 3552,
+                          0, 1, 0x01, 7, 1000, 0x80 | 60, 1 << 5)
+        s = B.decode_v2_row(row, t=10.0)
+        self.assertEqual(s["uptime_s"], 1234); self.assertEqual(s["hr"], 86.5); self.assertEqual(s["spo2"], 97.0)
+        self.assertEqual(s["sdnn"], 50.0); self.assertEqual(s["rmssd"], 42.0); self.assertEqual(s["rr"], 15.0)
+        self.assertEqual(s["pi"], 1.23); self.assertEqual(s["anom"], 0.6641); self.assertEqual(s["flow"], 0.42)
+        self.assertEqual(s["battery_mv"], 3552); self.assertEqual(s["mode"], "LOW"); self.assertFalse(s["held"])
+        self.assertTrue(s["hrv_ok"]); self.assertEqual(s["ir_dc"], 8000); self.assertEqual(s["led"], 60); self.assertEqual(s["rate_hz"], 100)
+        row2 = struct.pack("<IhhhhhhHHHHBBBBHBB", 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 3000, 1, 2, 0x20 | 0x08 | 0x04, 0, 0, 0, 0)
+        s2 = B.decode_v2_row(row2)
+        self.assertIsNone(s2["flow"]); self.assertIsNone(s2["hr"]); self.assertEqual(s2["mode"], "HIGH"); self.assertTrue(s2["held"])
+        self.assertTrue(s2["asleep"]); self.assertTrue(s2["poor_contact"]); self.assertEqual(s2["rate_hz"], 25)
+
+    def test_find_tools_dir_v2(self):
+        with tempfile.TemporaryDirectory() as d:
+            root = Path(d).resolve()
+            proj = root / "x" / "y"; proj.mkdir(parents=True)
+            self.assertIsNone(B.find_tools_dir_v2(None, start=proj))
+            t = root / "firmware_v2" / ".claude" / "worktrees" / "v2-build" / "tools"; t.mkdir(parents=True)
+            (t / "live_usb.py").write_text("#", "utf-8"); (t / "offload.py").write_text("#", "utf-8")
+            self.assertEqual(B.find_tools_dir_v2(None, start=proj), t)
+            self.assertEqual(B.find_tools_dir_v2(str(t), start=proj), t)
+
+
 class TestHandleLine(unittest.TestCase):
     def test_fanout_console_and_dedup(self):
         got, lines = [], []

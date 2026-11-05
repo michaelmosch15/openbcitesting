@@ -207,6 +207,9 @@ canvas { display: block; width: 100%; }
 .ramp { width: 160px; height: 10px; border: 1px solid var(--border); background: linear-gradient(90deg, #D3E9E2, #0A5853); }
 
 /* ---------- flow widget ---------- */
+.ready-banner { border: 1px solid var(--bad); border-left-width: 4px; border-radius: 4px; background: #FFF5F4; padding: 6px 10px; font-size: 12px; color: var(--ink); }
+.ready-banner.ok { border-color: var(--good); background: #F2FAF5; }
+.ready-banner b { margin-right: 6px; }
 .tiles-big { display: flex; gap: 10px; }
 .tile-big { flex: 1; border: 1px solid var(--border); border-radius: 4px; padding: 8px 12px; background: #FAFAFA; }
 .tile-label { font-size: 11px; color: var(--ink2); text-transform: uppercase; letter-spacing: .4px; }

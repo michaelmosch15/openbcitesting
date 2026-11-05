@@ -42,6 +42,42 @@ def welch(window: np.ndarray, fs: float, seg_s: float = 2.0, overlap: float = 0.
     return f, acc / used, used, total
 
 
+def welch_masked(window: np.ndarray, fs: float, seg_s: float = 2.0, overlap: float = 0.5,
+                 bad=None) -> tuple[np.ndarray, np.ndarray, np.ndarray, int]:
+    """Welch PSD with PER-CHANNEL segment rejection: `bad(segment)` -> bool array [n_ch]
+    (True = drop that channel's segment). Each channel's PSD is the mean over its own clean
+    segments (NaN where it has none). Returns (freqs, PSD [m, n_ch], n_used [n_ch], n_total)."""
+    n, n_ch = window.shape
+    seg = int(fs * seg_s)
+    step = max(1, int(seg * (1 - overlap)))
+    if n < seg:
+        f, P = psd(window, fs)
+        return f, P, np.ones(n_ch, int), 1
+    acc = None
+    used = np.zeros(n_ch, int)
+    total = 0
+    f = None
+    for start in range(0, n - seg + 1, step):
+        s = window[start:start + seg]
+        total += 1
+        mask = np.zeros(n_ch, bool) if bad is None else np.asarray(bad(s), bool)
+        if mask.all():
+            continue
+        f, P = psd(s, fs)
+        if acc is None:
+            acc = np.zeros_like(P)
+        keep = ~mask
+        acc[:, keep] += P[:, keep]
+        used[keep] += 1
+    if acc is None:
+        f, P = psd(window[:seg], fs)
+        return f, P * np.nan, used, total
+    out = np.full_like(acc, np.nan)
+    ok = used > 0
+    out[:, ok] = acc[:, ok] / used[ok]
+    return f, out, used, total
+
+
 def band_powers_of(f: np.ndarray, P: np.ndarray, bands: dict) -> dict[str, np.ndarray]:
     out = {}
     if len(f) == 0:

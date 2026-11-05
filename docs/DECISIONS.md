@@ -214,3 +214,37 @@ first minute of the block absorb the difference, and the per-block accuracy show
 it did. Typing adds small hand movement (less than a game controller). If the arithmetic
 task fails the manipulation check for a participant group, a Tetris-style task is a new
 protocol entry, not a change to this one.
+
+## ADR-12: Per-channel artifact scope and a readiness gate on the index (v0.3, 2026-11-05)
+
+**Context.** The first worn session (Lily, forehead-only montage, playing a game) produced no
+index at all: two combs were open, the six others were 70-100 % correlated with each other
+(the SRB2 / BIAS ear clip was not making contact), and movement put 0 % of 2-s segments
+under the amplitude rule. Minutes later the headset lay on the desk: the signal was quiet,
+every segment passed, and the dashboard happily scored a "flow" from a helmet on a table.
+Two separate problems: a rule that discards a whole segment when any one channel is noisy,
+and no notion of "is this a head at all".
+
+**Decision.**
+1. `artifact_scope` = `channel`: each channel keeps its own clean segments; the index runs
+   over the channels that are >= 50 % clean when at least `min_clean_channels` (2) remain.
+   `epoch` restores the v0.2 rule. Thresholds (150 uV p2p, 100 uV abs, 50 %) unchanged.
+2. A readiness verdict every epoch (`analysis.readiness`): `contact` (railed / near / flat
+   enabled channels), `reference` (mean |corr| of the filtered good channels >= 0.9),
+   `settling` (raw offsets > 100 mV), `artifact` (>= 80 % of the last 15 epochs rejected),
+   `few` (fewer clean channels than the minimum). Shown as a banner in the flow widget and
+   in Astra's snapshot.
+3. `gate_on_readiness`: while `reference` or `few` applies the epoch is withheld - `flow_eeg`
+   null, `gated` = reason, nothing enters `eeg_hist`, pairs, block means or the baseline.
+   The gate decides whether an epoch is scored, never how the score is computed.
+
+**Pre-registration.** This changes the artifact rule's scope and adds a gate after seeing
+data; it is recorded here, in `docs/EEG_FLOW_INDEX.md` 13b/13c and in `session.json`
+(`config.flow_index`). No difficulty-ladder session has been scored yet, so no verdict is
+affected; the first real series runs under these rules from the start. The owner's
+instruction on 2026-11-05 was "go through the data and improve the stuff to make it work".
+
+**Consequences.** A desk, an unclipped reference or a one-channel montage can no longer
+produce an index. Sessions with a reference problem are honestly empty (both of Lily's are:
+0 clean epochs on-head), and the banner says what to fix. `tools/replay_eeg.py` replays any
+recorded session under either scope to show the difference before a rule is changed again.
