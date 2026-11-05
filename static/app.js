@@ -83,6 +83,7 @@ const store = {
   flowRange: '30',
   wearers: [],
   sessions: [],
+  vitals: [],           // [t, hr, spo2, pi, flow_raw, rmssd] per band sample
   lastAnalysisT: null,
   protocol: null,       // status.protocol (null until the server reports one); patched by event: protocol
 };
@@ -897,8 +898,12 @@ const bandPanel = {
     $('bpTags').innerHTML = tags;
     $('bpMode').textContent = b ? (b.mode === 0 ? 'Standard monitoring' : b.mode === 1 ? 'Enhanced monitoring' : (b.mode == null ? '—' : String(b.mode))) : '—';
     $('bpWindow').textContent = b && b.window != null ? String(b.window) + (isNum(b.flow_state) ? ' · state ' + b.flow_state : '') : '—';
-    $('bpHr').textContent = b && isNum(b.hr) ? b.hr.toFixed(0) + ' bpm' : '—';
-    $('bpAnom').textContent = b && isNum(b.anom) ? b.anom.toFixed(2) : '—';
+    $('bpHr').textContent = b && isNum(b.hr) ? b.hr.toFixed(0) + ' bpm' + (isNum(b.base_hr) ? ' (base ' + b.base_hr.toFixed(0) + ')' : '') : '—';
+    $('bpAnom').textContent = b && isNum(b.anom) ? b.anom.toFixed(2) + (isNum(b.risk) ? ' · ' + b.risk.toFixed(2) : '') : '—';
+    $('bpSpo2').textContent = b && (isNum(b.spo2) || isNum(b.pi)) ? (isNum(b.spo2) ? b.spo2.toFixed(1) + ' %' : '—') + ' · ' + (isNum(b.pi) ? b.pi.toFixed(2) + ' %' : '—') : '—';
+    $('bpHrv').textContent = b && (isNum(b.rmssd) || isNum(b.rr)) ? 'RMSSD ' + (isNum(b.rmssd) ? b.rmssd.toFixed(0) : '—') + ' · SDNN ' + (isNum(b.sdnn) ? b.sdnn.toFixed(0) : '—') + ' ms · ' + (isNum(b.rr) ? b.rr.toFixed(0) + ' br/min' : '—') : '—';
+    $('bpFlowRaw').textContent = b && isNum(b.flow_raw) ? (b.flow_raw < 0 ? 'no reading' : b.flow_raw.toFixed(2)) + (isNum(b.flow_open5) ? ' · open ' + b.flow_open5.toFixed(2) + ' / end ' + (isNum(b.flow_end5) ? b.flow_end5.toFixed(2) : '—') : '') : '—';
+    $('bpPhase').textContent = b && (b.phase != null || isNum(b.battery_mv)) ? (b.phase != null ? 'phase ' + b.phase : '—') + (isNum(b.uptime_s) ? ' · up ' + fmtMMSS(b.uptime_s) : '') + ' · ' + (isNum(b.battery_mv) ? b.battery_mv + ' mV' : '—') : '—';
     $('bpName').textContent = (b && b.band) || (sb && sb.unit) || '—';
     $('bpSource').textContent = (b && b.source) || (sb && sb.source) || '—';
     $('bpAge').textContent = b && isNum(b.age_s) ? 'sample ' + fmtAge(b.age_s) + ' ago' : (sb && isNum(sb.last_line_age_s) ? 'last line ' + fmtAge(sb.last_line_age_s) + ' ago' : '—');
@@ -922,6 +927,53 @@ const bandPanel = {
         }
       } else this._seenHtml = null;
     } else $('bpLink').textContent = '—';
+    this.drawVitals();
+    this.pollConsole();
+  },
+  /** HR / SpO2 / PI / raw flow over the last 10 min, each on its own scale */
+  drawVitals() {
+    const cv = $('cvVitals'); if (!cv) return;
+    const { ctx, w, h } = fitCanvas(cv);
+    ctx.clearRect(0, 0, w, h);
+    const v = store.vitals || [];
+    const tEnd = v.length ? v[v.length - 1][0] : Date.now() / 1000;
+    const t0 = tEnd - 600;
+    const rows = v.filter((r) => r[0] >= t0);
+    const padL = 4, padR = 4, padT = 6, padB = 12;
+    ctx.strokeStyle = GRID; ctx.lineWidth = 1;
+    for (let i = 0; i <= 4; i++) { const y = padT + (h - padT - padB) * i / 4; ctx.beginPath(); ctx.moveTo(padL, y); ctx.lineTo(w - padR, y); ctx.stroke(); }
+    if (rows.length < 2) { ctx.fillStyle = INK3; ctx.fillText('no band samples yet', padL + 4, h / 2); return; }
+    const X = (t) => padL + (w - padL - padR) * (t - t0) / 600;
+    const series = [
+      { i: 1, col: '#C8362B', lo: 40, hi: 140 },      // HR bpm
+      { i: 2, col: '#36579E', lo: 70, hi: 100 },      // SpO2 %
+      { i: 3, col: '#D9A400', lo: 0, hi: 5 },         // PI %
+      { i: 4, col: COLOR_BAND, lo: 0, hi: 1 },        // flow raw
+    ];
+    for (const s of series) {
+      ctx.strokeStyle = s.col; ctx.lineWidth = 1.4; ctx.beginPath(); let pen = false;
+      for (const r of rows) {
+        const val = r[s.i];
+        if (!isNum(val) || (s.i === 4 && val < 0)) { pen = false; continue; }
+        const y = padT + (h - padT - padB) * (1 - clamp((val - s.lo) / (s.hi - s.lo), 0, 1));
+        if (!pen) { ctx.moveTo(X(r[0]), y); pen = true; } else ctx.lineTo(X(r[0]), y);
+      }
+      ctx.stroke();
+    }
+    ctx.fillStyle = INK2; ctx.fillText(fmtClock(t0), padL, h - 2); const lab = fmtClock(tEnd); ctx.fillText(lab, w - padR - ctx.measureText(lab).width, h - 2);
+  },
+  /** the USB console tail, refreshed every 3 s while the details is open */
+  pollConsole() {
+    const wrap = $('bandConsoleWrap'); if (!wrap || !wrap.open) return;
+    const now = performance.now();
+    if (this._consoleAt && now - this._consoleAt < 3000) return;
+    this._consoleAt = now;
+    getJSON('/api/band_console?n=60').then((j) => {
+      if (!j || !Array.isArray(j.lines)) return;
+      const pre = $('bandConsole');
+      pre.textContent = j.lines.map((l) => fmtClock(l[0], true) + '  ' + l[1]).join('\n') || '(no lines: band source is not usb, or nothing received yet)';
+      pre.scrollTop = pre.scrollHeight;
+    });
   },
 };
 
@@ -1634,6 +1686,7 @@ function onHello(d) {
   store.bandHist = Array.isArray(h.band) ? h.band.filter((p) => Array.isArray(p) && isNum(p[0])) : [];
   store.marks = Array.isArray(h.marks) ? h.marks.filter((p) => Array.isArray(p) && isNum(p[0])) : [];
   store.pairs = Array.isArray(h.pairs) ? h.pairs : [];
+  store.vitals = Array.isArray(h.vitals) ? h.vitals.filter((p) => Array.isArray(p) && isNum(p[0])) : [];
   store.lastAnalysisT = store.eeg.length ? store.eeg[store.eeg.length - 1][0] : null;
   buildLegends();
   widgets.head.layout();
@@ -1728,6 +1781,11 @@ function onBand(d) {
   if (isNum(d.t) && isNum(d.flow)) {
     const last = store.bandHist[store.bandHist.length - 1];
     if (!last || last[0] !== d.t) store.bandHist.push([d.t, d.flow, !!d.held]);
+  }
+  if (isNum(d.t)) {
+    if (!store.vitals) store.vitals = [];
+    const lv = store.vitals[store.vitals.length - 1];
+    if (!lv || lv[0] !== d.t) { store.vitals.push([d.t, d.hr, d.spo2, d.pi, d.flow_raw, d.rmssd]); if (store.vitals.length > 2400) store.vitals.splice(0, store.vitals.length - 1800); }
   }
   statsTiles.update();
   bandPanel.update();

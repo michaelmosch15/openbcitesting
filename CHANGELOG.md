@@ -40,6 +40,19 @@ All notable changes to this project are documented here. The format follows
   unless `allow_prereg`). API: `astra_fix`, `astra_revert`, `astra_restart`, `status.astra.fix`,
   `event: astra kind=fix` phases, `fixes` in `GET /api/astra`. `app.py` keeps a 400-line log
   ring for the fixer's context. Tests: `tests/test_fixer.py`, `tests/test_hotreload.py`.
+- USB band link reads the band's whole console: the 1-s status line (`mode`, `phase`, HR,
+  SpO2, RMSSD, SDNN, PI, RR, anom, risk, published flow, baseHR, `flowraw`, `flow_open5`,
+  `flow_end5`) is the sample source (the `[pub]` line only exists while a phone is connected
+  and is de-duplicated against it); `[vbat]` battery; sleep / warming lines flag the sample.
+  Published `flow` is None while the band shows no reading (`flowraw` < 0 or 0.00 while
+  settling); `flow_raw` carries the window score. Every console line goes to the UI ring
+  (`GET /api/band_console`) and to `band_console.log` in the session; `band.csv` gains the
+  vitals columns; `history.vitals` + `event: band` carry them to the band panel (vitals rows,
+  10-min HR / SpO2 / PI / raw-flow chart, console tail). `usb.bioproxal_tools_dir` may be null:
+  the tools are found by walking up to `worktrees/v0629/tools`. Raw red/IR PPG is NOT exported by
+  a production band (claim 15; research builds only) - this is every derived value, per second.
+- `--montage frontal` (`labels_8_frontal`: Fp1 Fp2 AF3 AF4 F3 F4 F7 F8) for the headset as
+  built: all eight combs across the forehead band.
 - Simulator demo: with `--sim` (`config.json` `sim.auto_rate`, default true) each
   `rating_due` is answered 3 s later with a Flow Short Scale rating that follows the induced
   condition (boredom low / flow high / overload low, demand 1 / 2 / 3), so an unattended

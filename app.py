@@ -53,8 +53,8 @@ def load_config(path: Path) -> dict:
 class BandManager:
     """Owns the one active band link (supabase / ble / usb / sim / none) and swaps it."""
 
-    def __init__(self, cfg: dict, on_sample, sim_board=None):
-        self.cfg, self.on_sample, self.sim_board = cfg, on_sample, sim_board
+    def __init__(self, cfg: dict, on_sample, sim_board=None, on_line=None):
+        self.cfg, self.on_sample, self.sim_board, self.on_line = cfg, on_sample, sim_board, on_line
         self.source = "none"
         self.link = None
         self._lock = threading.Lock()
@@ -81,9 +81,10 @@ class BandManager:
             elif source == "usb":
                 from band_link import BandLink
                 u = self.cfg.get("usb", {})
-                tools = u.get("bioproxal_tools_dir", "../worktrees/v0629/tools")
-                tools_path = (HERE / tools).resolve() if not Path(tools).is_absolute() else Path(tools)
-                self.link = BandLink(tools_path, port=port or u.get("port"), log=log)
+                self.link = BandLink(u.get("bioproxal_tools_dir"), port=port or u.get("port"), log=log,
+                                     on_line=self.on_line)
+                if self.link.tools_dir:
+                    log(f"[band] firmware tools: {self.link.tools_dir}")
             elif source == "sim":
                 from band_link import SimBandLink
                 if self.sim_board is None:
@@ -110,6 +111,10 @@ class BandManager:
                 st["error"] = repr(e)
         st["source"] = self.source
         return st
+
+    def console_tail(self, n: int = 40) -> list:
+        link = self.link
+        return link.console_tail(n) if link is not None and hasattr(link, "console_tail") else []
 
     def wearers(self) -> list[dict]:
         from supabase_link import SupabaseClient, load_env
@@ -154,9 +159,10 @@ def main(argv=None) -> int:
     ap.add_argument("--user-id", help="Supabase user_id (full uuid) to follow")
     ap.add_argument("--band-name", help="Supabase band name to follow, e.g. BioProxal4")
     ap.add_argument("--ble-address", help="band BLE address (default: first BioProxal* found)")
-    ap.add_argument("--montage", choices=["default", "flow"], default="default",
+    ap.add_argument("--montage", choices=["default", "flow", "frontal"], default="default",
                     help="8-ch electrode labels: 'default' = Mark IV factory sites (Fp1 Fp2 C3 C4 P7 P8 O1 O2); "
-                         "'flow' = the re-sited flow montage in config.json labels_8_flow (Fz F3 F4 Cz C3 C4 P3 P4)")
+                         "'flow' = the re-sited flow montage in config.json labels_8_flow (Fz F3 F4 Cz C3 C4 P3 P4); "
+                         "'frontal' = all eight combs across the forehead band, labels_8_frontal (Fp1 Fp2 AF3 AF4 F3 F4 F7 F8)")
     ap.add_argument("--astra", choices=["on", "off", "live"], default="on",
                     help="Astra panels (OpenAI gpt-6-astra, key from BioProxal2026/.env): on = ready, "
                          "live = start the live analyst at once, off = no Astra")
@@ -166,9 +172,9 @@ def main(argv=None) -> int:
     args = ap.parse_args(argv)
 
     cfg = load_config(Path(args.config))
-    if args.montage == "flow" and cfg.get("labels_8_flow"):
-        cfg["labels_8"] = cfg["labels_8_flow"]
-        log(f"[montage] 8-ch flow montage: {' '.join(cfg['labels_8'])}")
+    if args.montage in ("flow", "frontal") and cfg.get(f"labels_8_{args.montage}"):
+        cfg["labels_8"] = cfg[f"labels_8_{args.montage}"]
+        log(f"[montage] 8-ch {args.montage} montage: {' '.join(cfg['labels_8'])}")
     port = args.port or int(cfg.get("port", 8765))
 
     board = open_board(args, cfg)
@@ -178,7 +184,8 @@ def main(argv=None) -> int:
     from server import SERVER_VERSION
     recorder.meta = {"board": board.status(), "config": cfg, "server_version": SERVER_VERSION}
 
-    bands = BandManager(cfg, on_sample=lambda s: app.on_band(s), sim_board=board if args.sim else None)
+    bands = BandManager(cfg, on_sample=lambda s: app.on_band(s), sim_board=board if args.sim else None,
+                        on_line=lambda t, line: recorder.console(t, line))
     from protocol import ProtocolRunner, load_protocols
     runner = ProtocolRunner(load_protocols(HERE / "protocols.json"),
                             on_event=lambda e: app.on_protocol_event(e),

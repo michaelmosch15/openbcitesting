@@ -20,6 +20,8 @@ from pathlib import Path
 
 import numpy as np
 
+BAND_EXTRA = ("spo2", "pi", "rmssd", "sdnn", "rr", "flow_raw", "base_hr", "phase", "uptime_s", "flow_open5", "flow_end5")
+
 
 class Recorder:
     def __init__(self, root: Path, labels: list[str], meta: dict):
@@ -46,7 +48,8 @@ class Recorder:
             {**self.meta, "labels": self.labels, "started": stamp}, indent=2), "utf-8")
         self._open("eeg_raw", ["t_host", "sample"] + [f"ch{i + 1}_{l}" for i, l in enumerate(self.labels)]
                    + ["acc_x", "acc_y", "acc_z"])
-        self._open("band", ["t", "flow", "hr", "anom", "held", "settling", "fhi", "asleep", "poor_contact"])
+        self._open("band", ["t", "flow", "hr", "anom", "held", "settling", "fhi", "asleep", "poor_contact"] + list(BAND_EXTRA))
+        self._console = open(self.dir / "band_console.log", "a", encoding="utf-8")
         self._open("marks", ["t", "kind", "value", "note"])
         self._open("task", ["t", "block_index", "condition", "task", "level", "problem", "answer", "response", "correct", "rt_ms"])
         self._epoch_header = None
@@ -70,11 +73,13 @@ class Recorder:
         self.q.put(None)
         if self._thread:
             self._thread.join(5.0)
-        for f in self._files.values():
+        for f in list(self._files.values()) + [getattr(self, "_console", None)]:
             try:
-                f.close()
+                if f is not None:
+                    f.close()
             except Exception:  # noqa: BLE001
                 pass
+        self._console = None
         d, self._files, self._writers = self.dir, {}, {}
         return d
 
@@ -98,6 +103,11 @@ class Recorder:
     def trial(self, rec: dict) -> None:
         if self.active:
             self.q.put(("trial", dict(rec)))
+
+    def console(self, t: float, line: str) -> None:
+        """Every line the band prints on USB, as it came (band_console.log)."""
+        if self.active:
+            self.q.put(("console", float(t), str(line)))
 
     # --- consumer -----------------------------------------------------------------
     def _writer(self) -> None:
@@ -126,8 +136,14 @@ class Recorder:
                     self._writers["band"].writerow([f"{s['t']:.3f}", s["flow"], s["hr"], s["anom"],
                                                     int(s["held"]), int(s["settling"]),
                                                     "" if s.get("fhi") is None else s["fhi"],
-                                                    int(bool(s.get("asleep"))), int(bool(s.get("poor_contact")))])
+                                                    int(bool(s.get("asleep"))), int(bool(s.get("poor_contact")))]
+                                                   + ["" if s.get(k) is None else s[k] for k in BAND_EXTRA])
                     self.counts["band"] += 1
+                elif kind == "console":
+                    _, t, line = item
+                    if getattr(self, "_console", None) is not None:
+                        self._console.write(f"{t:.3f} {line}\n")
+                        self.counts["console"] = self.counts.get("console", 0) + 1
                 elif kind == "mark":
                     m = item[1]
                     self._writers["marks"].writerow([f"{m['t']:.3f}", m["kind"], m["value"], m["note"]])
@@ -142,6 +158,8 @@ class Recorder:
                 if self.q.qsize() == 0:
                     for f in self._files.values():
                         f.flush()
+                    if getattr(self, "_console", None) is not None:
+                        self._console.flush()
             except Exception as e:  # noqa: BLE001
                 print(f"[recorder] write error: {e!r}")
 

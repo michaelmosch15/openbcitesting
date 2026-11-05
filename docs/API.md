@@ -22,6 +22,7 @@ All responses `application/json`. Errors: `{"ok": false, "error": "<message>"}` 
 | `GET /api/state` | the full `status` object below plus the latest `analysis` object (`{"status": ..., "analysis": ...}`) |
 | `GET /api/history` | `{"pairs": [[t, band_flow, eeg_flow], ...], "eeg": [[t, flow_eeg], ...], "band": [[t, flow], ...], "marks": [[t, kind, value], ...]}` - the whole session so far (server keeps up to 4 h) |
 | `GET /api/wearers` | Supabase only: `{"wearers": [{"user_id": "<full uuid>", "short": "54af48b8", "band": "BioProxal4", "last_sampled_at": "<iso>", "age_s": 42, "rows_last_hour": 55}, ...]}` ordered newest first (last 24 h) |
+| `GET /api/band_console?n=60` | USB band only: `{"lines": [[t, "<console line>"], ...]` (last n, max 300), `"vitals": [[t, hr, spo2, pi, flow_raw, rmssd], ...]}` (last 600 band samples) |
 | `GET /api/sessions` | `{"sessions": [{"name": "2026-11-03_14-02-11_desk", "dir": "<abs path>", "epochs": 900, "band": 30, "marks": 4, "has_report": true}, ...]}` |
 | `GET /api/report?session=<name>` | runs `report.py` on that session, writes `report.md` into it, returns `{"ok": true, "markdown": "...", "summary": {...}}` |
 | `POST /api/cmd` | body `{"action": "...", ...}`; returns `{"ok": true, ...}` |
@@ -107,7 +108,12 @@ BLE/USB/sim). `r_ci` is a bootstrap 95 % interval; null until `n_pairs >= 8`.
 ```
 
 ### `event: band` (whenever a new band sample arrives)
-The `band` object above, alone.
+The `band` object above, alone. Since v0.3 it also carries the band's per-second vitals when
+the source provides them (USB status line, sim): `spo2`, `pi`, `rmssd`, `sdnn`, `rr`, `flow_raw`
+(the window score before display rules; -1 = no reading), `base_hr`, `phase`, `uptime_s`,
+`flow_open5`, `flow_end5`, `battery_mv`. `flow` is the PUBLISHED reading and is `null` while
+the band shows none (settling, no reading, asleep). `history.vitals` in `event: hello` holds
+`[t, hr, spo2, pi, flow_raw, rmssd]` for the last 1800 samples.
 
 ### `event: mark` (whenever a mark is added)
 `{"t": ..., "kind": "felt_flow", "value": 0.7, "note": ""}`
@@ -184,6 +190,9 @@ The dialog posts `rating` with all items; it can be dismissed (no rating stored)
 ### Session folder additions
 `task.csv` (t, block_index, condition, task, level, problem, answer, response, correct, rt_ms)
 and `ratings` inside `marks.csv` (kind `rating`, value = JSON). `report.py` scores per block.
+`band.csv` carries the vitals columns after `poor_contact` (`spo2, pi, rmssd, sdnn, rr,
+flow_raw, base_hr, phase, uptime_s, flow_open5, flow_end5`, blank when the source has none)
+and `band_console.log` holds every USB console line as `<t_host> <line>`.
 
 ## Astra (v0.3)
 

@@ -177,7 +177,11 @@
             <dt>mode</dt><dd id="bpMode">—</dd>
             <dt>window</dt><dd id="bpWindow">—</dd>
             <dt>heart rate</dt><dd id="bpHr">—</dd>
-            <dt>anomaly</dt><dd id="bpAnom">—</dd>
+            <dt>SpO2 · PI</dt><dd id="bpSpo2">—</dd>
+            <dt>HRV · resp</dt><dd id="bpHrv">—</dd>
+            <dt>anomaly · risk</dt><dd id="bpAnom">—</dd>
+            <dt>flow raw · heads</dt><dd id="bpFlowRaw">—</dd>
+            <dt>phase · battery</dt><dd id="bpPhase">—</dd>
             <dt>band</dt><dd id="bpName">—</dd>
             <dt>source</dt><dd id="bpSource">—</dd>
             <dt>link</dt><dd id="bpLink">—</dd>
@@ -187,6 +191,10 @@
             <label id="wearerRow">Wearer <select id="selWearer"><option value="">— select —</option></select><button id="btnWearers" class="btn btn-mini" title="reload wearers">↻</button></label>
             <div id="seenList" class="seen" hidden></div>
           </div>
+          <div class="vitals-head"><span class="tile-label">band vitals · last 10 min</span>
+            <span class="legend"><span class="lg"><i class="sw" style="background:#C8362B"></i>HR</span><span class="lg"><i class="sw" style="background:#36579E"></i>SpO2</span><span class="lg"><i class="sw" style="background:#D9A400"></i>PI</span><span class="lg"><i class="sw" style="background:#0B9C8F"></i>flow raw</span></span></div>
+          <canvas id="cvVitals" class="cv-vitals"></canvas>
+          <details id="bandConsoleWrap"><summary class="muted">band console (USB, last lines)</summary><pre id="bandConsole" class="band-console"></pre></details>
         </div>
       </section>
 

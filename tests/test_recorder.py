@@ -99,9 +99,12 @@ class TestRecorder(unittest.TestCase):
             self.assertEqual(rows[0][h.index("theta_abs_Fp1")], "12.5")
 
             h, rows = read_csv(sdir / "band.csv")
-            self.assertEqual(h, ["t", "flow", "hr", "anom", "held", "settling", "fhi", "asleep", "poor_contact"])
-            self.assertEqual(rows[0], [f"{t0 + 1:.3f}", "0.58", "71.5", "0.12", "0", "0", "", "0", "0"])
-            self.assertEqual(rows[1], [f"{t0 + 3:.3f}", "", "", "0.2", "1", "1", "0.4", "0", "0"])
+            from recorder import BAND_EXTRA
+            self.assertEqual(h, ["t", "flow", "hr", "anom", "held", "settling", "fhi", "asleep", "poor_contact"] + list(BAND_EXTRA))
+            blank = [""] * len(BAND_EXTRA)
+            self.assertEqual(rows[0], [f"{t0 + 1:.3f}", "0.58", "71.5", "0.12", "0", "0", "", "0", "0"] + blank)
+            self.assertEqual(rows[1], [f"{t0 + 3:.3f}", "", "", "0.2", "1", "1", "0.4", "0", "0"] + blank)
+            self.assertTrue((sdir / "band_console.log").exists())
 
             h, rows = read_csv(sdir / "marks.csv")
             self.assertEqual(h, ["t", "kind", "value", "note"])

@@ -49,8 +49,12 @@ C3 C4 P7 P8 O1 O2) has only the prefrontal Fp sites, which blinks dominate. Move
 electrodes to **Fz F3 F4 Cz C3 C4 P3 P4** and start with `--montage flow` (the labels in
 `config.json` `labels_8_flow`): theta is then read at Fz/F3/F4 and the upper-alpha and
 engagement covariates at Cz/C3/C4/P3/P4. With a 16-channel Daisy the frontal set is
-F7 F8 F3 F4. The montage is recorded in `session.json` and in the protocol header; it is
-part of the pre-registration. Details: `docs/EEG_FLOW_INDEX.md` section 5.
+F7 F8 F3 F4. The headset as built on 2026-11-05 has all eight combs in two rows across the
+forehead band: start with `--montage frontal` (`labels_8_frontal`: Fp1 Fp2 AF3 AF4 F3 F4 F7
+F8); every channel then counts as frontal for the index, and the exact channel-to-position
+order is confirmed by tapping each comb while watching the time series. The montage is
+recorded in `session.json` and in the protocol header; it is part of the pre-registration.
+Details: `docs/EEG_FLOW_INDEX.md` section 5.
 
 ## What the EEG index is
 
@@ -69,7 +73,7 @@ the research review: `docs/EEG_FLOW_LITERATURE.md`.
 |---|---|---|---|
 | `supabase` (default) | band -> Amplifly phone app (BLE) -> Supabase `wearable_samples` -> polled every 5 s (`supabase_link.py`) | 1 row/min (5-6 per 6-min block) | The normal deployment path. Needs `%USERPROFILE%\.bioproxal\supabase.env` with `SUPABASE_URL` and a key. Pick the wearer in the band panel. |
 | `ble` | band -> this laptop with `bleak` (`band_ble.py`) | every 2 s | Finer resolution. The band allows one BLE connection: close the Amplifly app first. Nothing is written to the band. |
-| `usb` | band on a cable through the firmware repo's tools (`band_link.py`) | every 2 s | Bench use; needs `usb.bioproxal_tools_dir` and `%USERPROFILE%\.bioproxal\master.key`. Read-only. |
+| `usb` | band on a cable through the firmware repo's tools (`band_link.py`) | every 1 s | The band's whole console once unlocked: HR, SpO2, RMSSD, SDNN, perfusion, respiration, anomaly, risk, published flow, base HR, raw flow, forecast heads, battery, mode / phase. Needs `%USERPROFILE%\.bioproxal\master.key`; the firmware tools are found at `<ancestor>/worktrees/v0629/tools` or set `usb.bioproxal_tools_dir`. Read-only; every line is kept (`band_console.log`, band panel console). Raw red/IR PPG is not exported by a production band (patent claim 15: research builds only). |
 | `sim` | synthetic | every 2 s | With `--sim`: the simulator's hidden state, which follows the protocol's conditions, plus noise and a 20-s lag. |
 | `none` | - | - | EEG and self-report only. |
 

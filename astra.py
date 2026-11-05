@@ -242,6 +242,10 @@ def render_live(s: dict) -> str:
     bv = s.get("band_view") or {}
     out.append(f"band link {bl.get('source')} connected={bl.get('connected')} unit={bl.get('unit') or bv.get('band')} "
                f"last_sample_age={_f(bv.get('age_s'), 0)} s hr={bv.get('hr')} mode={bv.get('mode')} error={bl.get('error')}")
+    if bv.get("spo2") is not None or bv.get("pi") is not None:
+        out.append(f"band vitals: spo2={_f(bv.get('spo2'), 1)}% PI={_f(bv.get('pi'))}% RMSSD={_f(bv.get('rmssd'), 0)} ms "
+                   f"SDNN={_f(bv.get('sdnn'), 0)} ms RR={_f(bv.get('rr'), 0)} base_hr={_f(bv.get('base_hr'), 0)} "
+                   f"flow_raw={_f(bv.get('flow_raw'))} phase={bv.get('phase')} battery={bv.get('battery_mv')} mV")
     pw = s["pairs_window"]
     st = s["stats"]
     out.append(f"pairs in window n={len(pw)} r_window={_f(s['r_window'])}; session n_pairs={st.get('n_pairs')} r={_f(st.get('r'))} "

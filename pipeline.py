@@ -26,6 +26,8 @@ POSITIONS = {
     "Pz": (0.0, -0.55), "P7": (-0.81, -0.59), "P8": (0.81, -0.59), "O1": (-0.31, -0.95), "O2": (0.31, -0.95),
 }
 LAGS = list(range(-180, 181, 10))
+# the band's per-second vitals (USB status line / sim); recorded in band.csv and shown in the panel
+BAND_EXTRA = ("spo2", "pi", "rmssd", "sdnn", "rr", "flow_raw", "base_hr", "phase", "uptime_s", "flow_open5", "flow_end5")
 
 
 def pearson(x: np.ndarray, y: np.ndarray) -> float | None:
@@ -242,10 +244,13 @@ class Pipeline:
         self.latest_band = s
         self.band_hist.append((s["t"], s.get("flow"), s))
         if self.recorder is not None:
-            self.recorder.band({"t": s["t"], "flow": "" if s.get("flow") is None else s["flow"],
-                                "hr": "" if s.get("hr") is None else s["hr"], "anom": s.get("anom", ""),
-                                "held": bool(s.get("held")), "settling": bool(s.get("settling")), "fhi": s.get("fhi"),
-                                "asleep": bool(s.get("asleep")), "poor_contact": bool(s.get("poor_contact"))})
+            rec = {"t": s["t"], "flow": "" if s.get("flow") is None else s["flow"],
+                   "hr": "" if s.get("hr") is None else s["hr"], "anom": s.get("anom", ""),
+                   "held": bool(s.get("held")), "settling": bool(s.get("settling")), "fhi": s.get("fhi"),
+                   "asleep": bool(s.get("asleep")), "poor_contact": bool(s.get("poor_contact"))}
+            for k in BAND_EXTRA:
+                rec[k] = s.get(k)
+            self.recorder.band(rec)
         usable = (s.get("flow") is not None and not s.get("held") and not s.get("asleep")
                   and not s.get("settling") and not s.get("poor_contact"))
         if usable:
@@ -264,7 +269,7 @@ class Pipeline:
             return None
         v = {k: s.get(k) for k in ("t", "flow", "hr", "anom", "mode", "held", "settling", "asleep", "poor_contact",
                                    "flow_state", "window", "band", "source", "risk", "battery_mv", "learn_pct",
-                                   "low_battery", "user_id")}
+                                   "low_battery", "user_id", *BAND_EXTRA)}
         v["band"] = v.get("band") or s.get("unit")
         v["user_id_short"] = (s.get("user_id") or "")[:8] or None
         v.pop("user_id", None)
@@ -441,7 +446,15 @@ class Pipeline:
         return {"pairs": [[round(t, 2), round(b, 4), round(e, 4)] for (t, b, e) in self.pairs],
                 "eeg": [[round(t, 2), v] for (t, v) in self.eeg_hist],
                 "band": [[round(t, 2), fl, bool(s.get("held"))] for (t, fl, s) in self.band_hist],
+                "vitals": self.vitals(),
                 "marks": [[round(m["t"], 2), m["kind"], m["value"]] for m in self.marks]}
+
+    def vitals(self, max_n: int = 1800) -> list:
+        """[t, hr, spo2, pi, flow_raw, rmssd] per band sample, newest `max_n` (the band panel chart)."""
+        out = []
+        for (t, fl, s) in list(self.band_hist)[-max_n:]:
+            out.append([round(t, 2), s.get("hr"), s.get("spo2"), s.get("pi"), s.get("flow_raw"), s.get("rmssd")])
+        return out
 
     def hello(self) -> dict:
         return {"labels": self.labels, "fs": self.fs, "n_ch": self.n_ch, "channel_colors": self.colors,

@@ -298,6 +298,9 @@ class Handler(BaseHTTPRequestHandler):
                 return self._json(app.protocol.status() if app.protocol else {"active": False, "available": []})
             if u.path == "/api/sessions":
                 return self._json({"sessions": app.sessions()})
+            if u.path == "/api/band_console":
+                n = int(parse_qs(u.query).get("n", ["60"])[0])
+                return self._json({"lines": app.bands.console_tail(max(1, min(n, 300))), "vitals": app.pipeline.vitals(600)})
             if u.path == "/api/astra":
                 return self._json(app.astra.state() if app.astra else {"available": False, "notes": [], "setup_transcript": [], "fixes": []})
             if u.path == "/api/report":
