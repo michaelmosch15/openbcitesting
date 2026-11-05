@@ -92,6 +92,16 @@ Astra is the owner's OpenAI reviewer persona (model `gpt-6-astra`; the key is `O
   switches, the quality flags and the band links, and sees the table with every question.
   *Check my setup* walks channel by channel and ends READY / NOT READY.
 
+- **In-flight fixes** - describe what is wrong while the app runs ("the band panel shows age
+  0 s when the link is stale"). Astra reads the source it needs, sends a minimal patch, the
+  server runs `py_compile`, `node --check` and the unit tests, keeps before/after copies under
+  `astra_fixes/`, and hot-swaps the changed module into the running process (static files are
+  served fresh on the next page load; `app.py` / `config.json` changes show a *restart server*
+  button, refused while a protocol or recording runs). A failed verification is rolled back
+  and Astra gets one more try; *revert last fix* restores the previous files. Pre-registered
+  parameters (protocol durations, index weights, artifact thresholds, gates) stay locked
+  unless you tick "may change pre-registered parameters" for that job.
+
 No `.env` with the key: the panels say so and stay disabled; everything else works.
 `--astra off` removes them. Settings in `config.json` `astra` (`live_interval_s`,
 `window_min`, `max_tokens`, `memory_turns`, `auto_live`). Nothing but the prompt text (numbers
@@ -159,6 +169,8 @@ band_link.py        BandLink (USB), SimBandLink;  band_ble.py  BleBandLink;  sup
 recorder.py         Recorder: session folders, CSVs (eeg_raw, epochs, band, marks, task)
 report.py           offline per-block report with the pre-registered gates
 astra.py            Astra (gpt-6-astra): LiveAnalyst notes / analysis / Q&A, SetupHelper chat
+fixer.py            Astra in-flight fixes: read / patch / verify loop, records, revert, restart
+hotreload.py        swap a reloaded module into live instances and sibling imports
 static/             index.html, app.js (task + rating dialog + Astra panels), style.css
 config.json         defaults: port, board, labels_8 / labels_8_flow / labels_16, filters,
                     flow_index (weights, baseline, artifact thresholds, Welch window)

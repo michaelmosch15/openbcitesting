@@ -237,7 +237,29 @@
     </section>
   </div>
 
-  <!-- 9. SESSIONS -->
+  <!-- 9. ASTRA: in-flight fixes -->
+  <section class="widget" id="wAstraFix">
+    <div class="widget-head"><span>Astra · in-flight fixes</span>
+      <span class="head-right head-ctl">
+        <span id="astraFixState" class="muted-light">—</span>
+        <button id="btnAstraReload" class="btn btn-mini" hidden title="static files changed: reload this page">reload page</button>
+        <button id="btnAstraRestart" class="btn btn-mini" hidden title="a changed module cannot be hot-swapped: restart the server (refused while a protocol or recording runs)">restart server</button>
+        <button id="btnAstraRevert" class="btn btn-mini" title="restore the files of the last applied fix">revert last fix</button>
+      </span></div>
+    <div class="widget-body astra-body">
+      <div class="fix-row">
+        <textarea id="astraIssue" rows="2" maxlength="4000" placeholder="describe what is wrong while the app runs, e.g. 'the band panel shows age 0 s even when the band link is stale' — Astra reads the code, patches it, runs the tests and hot-swaps the module"></textarea>
+        <div class="fix-ctls">
+          <button id="btnAstraFix" class="btn btn-blue">Fix it</button>
+          <label class="fix-chk" title="protocol durations, index weights, artifact thresholds, verdict gates"><input type="checkbox" id="chkAstraPrereg"> may change pre-registered parameters</label>
+        </div>
+      </div>
+      <div id="astraFixLog" class="astra-feed fix-log"><div class="astra-empty muted">Each job streams its steps here: what Astra read, the patch summary, verification (py_compile, node --check, unit tests), what was hot-reloaded. Applied fixes are recorded under <code>astra_fixes/</code> with before/after copies.</div></div>
+      <details id="astraDiffWrap" hidden><summary class="muted">diff of the last applied fix</summary><pre id="astraDiff" class="fix-diff"></pre></details>
+    </div>
+  </section>
+
+  <!-- 10. SESSIONS -->
   <details class="widget" id="wSessions">
     <summary class="widget-head"><span>Sessions</span><span class="head-right" id="sessCount"></span></summary>
     <div class="widget-body">

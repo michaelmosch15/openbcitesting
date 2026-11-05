@@ -50,9 +50,25 @@ samples with flags, pairs and their r, block table, task accuracy, quality) ever
 session folder. `SetupHelper` answers placement / wiring / band-link questions from a
 `setup_snapshot` (board, per-channel quality and raw peaks, montage, frontal sites, band
 link) plus a fixed reference (10-20 sites, Mark IV handling, Cyton switches, quality flags,
-the README troubleshooting table and the manual hardware checks). Astra never writes to the
-pipeline, the recorder or the protocol; it is observational and its prompts forbid tuning
-suggestions.
+the README troubleshooting table and the manual hardware checks). The analyst and the setup
+helper never write to the pipeline, the recorder or the protocol; they are observational and
+their prompts forbid tuning suggestions.
+
+`fixer.py` is the one Astra component that changes things: the operator reports an issue,
+`Fixer.fix()` runs a JSON action loop with the model (`read` files -> `patch` with
+find/replace edits -> verification by `py_compile` / `node --check` / the unit tests in a
+subprocess -> rollback and one retry on failure), records before/after copies and the diff
+under `astra_fixes/`, then hands each changed module to `hotreload.reload_module()`:
+`importlib.reload`, re-point `__class__` on every live instance reachable from the app roots
+(`App`, `Pipeline`, board, recorder, `BandManager`, `ProtocolRunner`, `Astra`), rebind
+`from x import y` names in sibling modules. `server.py` needs one extra step (the
+`ThreadingHTTPServer` holds the `Handler` class; `app.py` swaps it in `post_reload`).
+`app.py` and `config.json` cannot be swapped: the job sets `needs_restart` and
+`astra_restart` starts a fresh process with the same arguments after closing the listening
+socket (refused while a protocol or recording runs). The pre-registration guard is
+mechanical: without the operator's `allow_prereg` flag, `protocols.json` and any edit to a
+line carrying an index weight, artifact threshold, Welch window, gate constant or
+`duration_s` is rejected before anything is written.
 
 ## Data flow
 
@@ -165,6 +181,7 @@ server broadcasts a `mark` event.
 | `sse-tick` | `App` | the single transport loop: every 100 ms drains samples and pushes `samples`, `analysis`, `status` to all SSE subscribers |
 | `http` + one thread per connection | `ThreadingHTTPServer` | JSON API and the long-lived `/events` connections (keepalive comment every 15 s); `rating` / `trial` / `protocol_*` commands run here |
 | `astra-live` | `astra.LiveAnalyst` | wakes every second; when live and due, builds the snapshot and makes one streamed OpenAI call (up to ~3 min with retries), emitting `astra` events; `astra_analyze` / `astra_ask` / `astra_check` each run on a one-off daemon thread, serialised per panel by `LiveAnalyst._lock` / `SetupHelper._lock` |
+| one-off daemon per `astra_fix` | `fixer.Fixer` | the read / patch / verify loop (model calls up to 10 min each, the unit tests in a subprocess), file writes, `hotreload` of changed modules; serialised by `Fixer._lock`; the hot reload itself runs on this thread while the others keep running - instances get the new class between two method calls |
 | main | `app.py` | waits for Ctrl-C, then stops board, band, recorder, server |
 
 Shared state is protected by `SampleBuffer.lock` (ring), `Pipeline.lock` (filter chain +

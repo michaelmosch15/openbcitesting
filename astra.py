@@ -567,25 +567,65 @@ class Astra:
     """Facade wired by app.py; the server calls `command` and `status`."""
 
     def __init__(self, pipeline, status_fn, cfg: dict, broadcast, log=print, recorder=None, chat_fn=chat,
-                 raw_peak_fn=None, reference: str | None = None):
+                 raw_peak_fn=None, reference: str | None = None, log_tail_fn=None, roots_fn=None, restart_fn=None,
+                 protocol_reload_fn=None, post_reload_fn=None, fixer=None):
         self.cfg = cfg or {}
         self.log = log
+        self.pipeline, self.status_fn = pipeline, status_fn
         self.available = find_env() is not None
         emit = lambda d: broadcast("astra", d)  # noqa: E731
         self.analyst = LiveAnalyst(pipeline, status_fn, self.cfg, emit, log=log, chat_fn=chat_fn, recorder=recorder)
         self.setup = SetupHelper(pipeline, status_fn, self.cfg, emit, log=log, chat_fn=chat_fn, raw_peak_fn=raw_peak_fn,
                                  reference=load_reference() if reference is None else reference)
+        self.log_tail_fn = log_tail_fn or (lambda n: [])
+        self.roots_fn = roots_fn or (lambda: [])
+        self.post_reload_fn = post_reload_fn
+        if fixer is None:
+            import fixer as _fixer
+
+            def fix_chat(msgs, model, max_tokens):
+                try:
+                    return chat_fn(msgs, model=model, max_tokens=max_tokens, timeout=600.0)
+                except TypeError:
+                    return chat_fn(msgs, model=model, max_tokens=max_tokens)
+            fixer = _fixer.Fixer(self.cfg, emit, fix_chat, self.fix_context, self.reload_module, log=log,
+                                 restart_fn=restart_fn, protocol_reload_fn=protocol_reload_fn)
+        self.fixer = fixer
         if not self.available:
             log("[astra] no .env with OPENAI_KEY above this folder; Astra panels will show 'no key'")
         elif self.cfg.get("auto_live"):
             self.analyst.set_live(True)
 
+    # --- for the fixer ---
+    def fix_context(self) -> str:
+        parts = []
+        try:
+            st = self.status_fn()
+            parts.append(render_live(live_snapshot(self.pipeline, st, 300.0)))
+            parts.append(render_setup(setup_snapshot(self.pipeline, st, getattr(self.pipeline, "last_raw_peak", None))))
+        except Exception as e:  # noqa: BLE001
+            parts.append(f"(snapshot failed: {e})")
+        tail = self.log_tail_fn(40)
+        if tail:
+            parts.append("SERVER LOG (last lines):\n" + "\n".join(str(x) for x in tail))
+        if self.analyst.notes:
+            parts.append("ASTRA'S RECENT NOTES:\n" + "\n".join(f"- {n['text']}" for n in self.analyst.notes[-5:]))
+        return "\n\n".join(parts)
+
+    def reload_module(self, name: str) -> dict:
+        import hotreload
+        info = hotreload.reload_module(name, self.roots_fn(), HERE, log=self.log)
+        if self.post_reload_fn:
+            self.post_reload_fn(name, info)
+        return info
+
     def status(self) -> dict:
         return {"available": self.available, "model": str(self.cfg.get("model", DEFAULT_MODEL)),
-                "live": self.analyst.status(), "setup": self.setup.status()}
+                "live": self.analyst.status(), "setup": self.setup.status(), "fix": self.fixer.status()}
 
     def state(self) -> dict:
-        return {**self.status(), "notes": self.analyst.notes[-200:], "setup_transcript": self.setup.transcript[-60:]}
+        return {**self.status(), "notes": self.analyst.notes[-200:], "setup_transcript": self.setup.transcript[-60:],
+                "fixes": self.fixer.fixes[-50:]}
 
     def _bg(self, fn, *a):
         threading.Thread(target=self._guard, args=(fn, *a), daemon=True).start()
@@ -631,4 +671,23 @@ class Astra:
         if action == "astra_clear":
             self.setup.clear()
             return {"cleared": True}
+        if action == "astra_fix":
+            text = str(body.get("text") or "").strip()
+            if not text:
+                raise ValueError("describe the issue")
+            if self.fixer.busy:
+                raise ValueError("Astra is still working on a fix")
+            self._bg(self.fixer.fix, text, bool(body.get("allow_prereg")))
+            return {"started": True}
+        if action == "astra_revert":
+            if self.fixer.busy:
+                raise ValueError("Astra is still working on a fix")
+            return self.fixer.revert()
+        if action == "astra_restart":
+            st = self.status_fn()
+            proto = st.get("protocol") or {}
+            rec = st.get("recorder") or {}
+            if (proto.get("active") or rec.get("active")) and not body.get("force"):
+                raise ValueError("a protocol or recording is running; stop it first (or force)")
+            return self.fixer.restart()
         raise ValueError(f"unknown action {action!r}")

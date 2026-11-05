@@ -27,6 +27,19 @@ All notable changes to this project are documented here. The format follows
   `window_min`, `max_tokens`, `memory_turns`, `auto_live`); `Pipeline.last_raw_peak`.
 - `tests/test_astra.py` (key loading, SSE chunk parser, snapshots and renderings, analyst
   notes / history / files with a fake chat function, setup transcript, facade dispatch).
+- `fixer.py` + `hotreload.py`: Astra in-flight fixes. The operator reports an issue in the
+  "Astra · in-flight fixes" panel; Astra runs a JSON action loop (`read` files, `patch` with
+  exact find/replace edits, or `answer`), the server verifies (`py_compile`, `node --check`,
+  `python -m unittest discover -s tests` in a subprocess), rolls back and retries once on
+  failure, records before/after copies + diff + `fix.md` under `astra_fixes/` (git-ignored),
+  then hot-swaps changed modules (`importlib.reload`, live instances re-classed, sibling
+  from-imports rebound; `server.Handler` re-attached to the HTTP server). `static/` changes
+  flag a page reload; `app.py` / `config.json` flag a restart (`astra_restart`, refused while
+  a protocol or recording runs). `astra_revert` restores the last fix. Path and
+  pre-registration guards (`protocols.json`, weights, thresholds, gates, `duration_s` locked
+  unless `allow_prereg`). API: `astra_fix`, `astra_revert`, `astra_restart`, `status.astra.fix`,
+  `event: astra kind=fix` phases, `fixes` in `GET /api/astra`. `app.py` keeps a 400-line log
+  ring for the fixer's context. Tests: `tests/test_fixer.py`, `tests/test_hotreload.py`.
 - Simulator demo: with `--sim` (`config.json` `sim.auto_rate`, default true) each
   `rating_due` is answered 3 s later with a Flow Short Scale rating that follows the induced
   condition (boredom low / flow high / overload low, demand 1 / 2 / 3), so an unattended

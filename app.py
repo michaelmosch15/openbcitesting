@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import signal
 import sys
 import threading
@@ -29,8 +30,15 @@ from recorder import Recorder  # noqa: E402
 from server import App, serve  # noqa: E402
 
 
+from collections import deque  # noqa: E402
+
+LOG_RING: deque = deque(maxlen=400)      # the last log lines, for Astra's fixer context
+
+
 def log(msg: str) -> None:
-    print(f"{datetime.now().strftime('%H:%M:%S')} {msg}", flush=True)
+    line = f"{datetime.now().strftime('%H:%M:%S')} {msg}"
+    LOG_RING.append(line)
+    print(line, flush=True)
 
 
 def load_config(path: Path) -> dict:
@@ -176,6 +184,52 @@ def main(argv=None) -> int:
                             on_event=lambda e: app.on_protocol_event(e),
                             on_mark=lambda k, v, n="": app.on_protocol_mark(k, v, n), log=log)
     app = App(pipeline, board, recorder, bands, cfg, log=log, protocol=runner)
+    held = {"httpd": None}          # filled after serve(); used by the restart and post-reload hooks
+
+    def shutdown_all() -> None:
+        try:
+            recorder.stop()
+        except Exception:  # noqa: BLE001
+            pass
+        try:
+            board.close()
+        except Exception:  # noqa: BLE001
+            pass
+        try:
+            if bands.link:
+                bands.link.stop()
+        except Exception:  # noqa: BLE001
+            pass
+
+    def restart_server() -> None:
+        """Astra's in-flight fixer: start a fresh process with the same arguments (no new browser
+        tab) once the listening socket is closed, then leave. The page reconnects by itself."""
+        import subprocess
+        log("[app] restarting")
+        argv = [sys.executable] + sys.argv
+        if "--no-browser" not in argv:
+            argv.append("--no-browser")
+        shutdown_all()
+        if held["httpd"] is not None:
+            try:
+                held["httpd"].shutdown()
+                held["httpd"].server_close()
+            except Exception:  # noqa: BLE001
+                pass
+        subprocess.Popen(argv, cwd=str(HERE), close_fds=True)
+        os._exit(0)
+
+    def post_reload(name: str, info: dict) -> None:
+        if name == "server" and held["httpd"] is not None:
+            import server as _server
+            _server.Handler.app = app
+            held["httpd"].RequestHandlerClass = _server.Handler
+
+    def protocol_reload() -> None:
+        if runner.active:
+            raise ValueError("protocol running; re-read after it ends")
+        runner.protocols = load_protocols(HERE / "protocols.json")
+
     if args.astra != "off":
         from astra import Astra
         acfg = dict(cfg.get("astra") or {})
@@ -183,7 +237,10 @@ def main(argv=None) -> int:
             acfg["auto_live"] = True
         try:
             app.astra = Astra(pipeline, app.status, acfg, app.broadcast, log=log, recorder=recorder,
-                              raw_peak_fn=lambda: pipeline.last_raw_peak)
+                              raw_peak_fn=lambda: pipeline.last_raw_peak,
+                              log_tail_fn=lambda n: list(LOG_RING)[-n:],
+                              roots_fn=lambda: [app, pipeline, board, recorder, bands, runner, app.astra],
+                              restart_fn=restart_server, protocol_reload_fn=protocol_reload, post_reload_fn=post_reload)
         except Exception as e:  # noqa: BLE001
             log(f"[astra] disabled: {e}")
     band_source = args.band or ("sim" if args.sim else cfg.get("band_source", "supabase"))
@@ -194,6 +251,7 @@ def main(argv=None) -> int:
         log(f"[band] could not start source {band_source}: {e}")
 
     httpd = serve(app, "127.0.0.1", port)
+    held["httpd"] = httpd
     url = f"http://127.0.0.1:{port}/"
     log(f"[http] dashboard at {url}")
     if not args.no_stream:

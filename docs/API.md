@@ -236,6 +236,47 @@ current block's task accuracy, marks, per-channel quality, recording state, plus
 `astra.memory_turns` exchanges. Its system prompt forbids proposing changes to weights,
 thresholds, gates or schedule (pre-registration).
 
+### In-flight fixes (`fixer.py`, `hotreload.py`)
+
+The operator describes an issue; Astra reads source files, sends find/replace edits, the
+server verifies them (`py_compile`, `node --check`, `python -m unittest discover -s tests`),
+records before/after copies under `astra_fixes/<stamp>_<slug>/` (git-ignored) and swaps the
+changed modules into the running process. One job at a time.
+
+| action | fields | effect |
+|---|---|---|
+| `astra_fix` | `text` (<= 4000 chars), `allow_prereg` bool | start a fix job; `{"started": true}`; progress arrives as `event: astra` `kind: "fix"` |
+| `astra_revert` | - | restore the files of the last applied fix from its `before/` copies and re-swap; `{"reverted": "<record dir>", "files": [...], "needs_restart": bool}` |
+| `astra_restart` | `force` bool | restart the server process with the same arguments (refused with 400 while a protocol or recording is active unless `force`); the page reconnects through the SSE back-off |
+
+`event: astra` with `kind: "fix"` carries `id` (one per job), `t`, `phase` and `text`:
+
+| phase | meaning / extra fields |
+|---|---|
+| `start` | job accepted; `issue` |
+| `read` | files Astra asked for; `files` |
+| `patch` | edits about to be applied; `files`, summary in `text` |
+| `verify` | compile / node / unit tests running; `files` |
+| `rejected` | the patch was refused (bad `find`, unread file, pre-registered parameter) or verification failed and the files were restored; Astra gets one more try |
+| `done` | applied: `summary`, `diff` (unified), `files`, `needs_restart`, `reload_browser`, `reload` (per-file swap-in notes), `record`, `verify` (steps); `done: true` |
+| `answer` | no code change: `text` is Astra's explanation or question; `done: true` |
+| `failed` | gave up (two failed patches, bad replies, exception); files are as before; `done: true` |
+
+`status.astra.fix` = `{"busy", "error", "n_fixes", "needs_restart", "reload_browser", "model", "last"}`;
+`GET /api/astra` adds `fixes` (applied, newest last: `id`, `t`, `issue`, `summary`, `files`,
+`record`, `needs_restart`, `reload_browser`).
+
+What can be hot-swapped: any root module except `app.py` (`importlib.reload`, then every
+live instance of its classes reachable from the app gets the new class and `from x import y`
+names in sibling modules are rebound; a thread already inside an old loop body finishes it
+with the old code); `static/*` is served fresh on the next page load (`reload_browser`);
+`protocols.json` is re-read when no protocol runs; `config.json` and `app.py` set
+`needs_restart`. Allowed targets: root `*.py`, `static/`, `tests/`, `docs/*.md`,
+`config.json`, `protocols.json`. Never: `.env`, `sessions/`, `astra_fixes/`, anything outside
+the project. Without `allow_prereg`, `protocols.json` and any edit that changes a line holding
+a pre-registered parameter (index weights, artifact thresholds, Welch window, verdict gates,
+`duration_s`) are rejected.
+
 ### Session folder additions
 While recording, every live-analyst entry is appended to `astra_notes.md` (one bullet per
 note with clock, block and condition) and `astra_notes.jsonl` (the note objects). Nothing is

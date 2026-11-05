@@ -1043,7 +1043,43 @@ const astra = {
     $('astraAskSetup').addEventListener('keydown', (e) => { if (e.key === 'Enter') askSetup(); });
     $('btnAstraCheck').addEventListener('click', () => cmd('astra_check').then((j) => { if (!j.ok) this.toast('setup', j.error); }));
     $('btnAstraClear').addEventListener('click', () => cmd('astra_clear').then(() => { $('astraSetupLog').innerHTML = ''; }));
+    // in-flight fixes
+    const fixIt = () => {
+      const t = $('astraIssue').value.trim(); if (!t) return;
+      cmd('astra_fix', { text: t, allow_prereg: $('chkAstraPrereg').checked }).then((j) => {
+        if (!j.ok) this.fixStep({ id: 'e' + Date.now(), t: Date.now() / 1000, phase: 'failed', text: j.error, done: true });
+        else $('astraIssue').value = '';
+      });
+    };
+    $('btnAstraFix').addEventListener('click', fixIt);
+    $('astraIssue').addEventListener('keydown', (e) => { if (e.key === 'Enter' && (e.ctrlKey || e.metaKey)) fixIt(); });
+    $('btnAstraRevert').addEventListener('click', () => cmd('astra_revert').then((j) => { if (!j.ok) this.fixStep({ id: 'e' + Date.now(), t: Date.now() / 1000, phase: 'failed', text: j.error, done: true }); }));
+    $('btnAstraReload').addEventListener('click', () => location.reload());
+    $('btnAstraRestart').addEventListener('click', () => {
+      if (!confirm('Restart the server now? The stream stops for a few seconds; the page reconnects by itself.')) return;
+      cmd('astra_restart').then((j) => { if (!j.ok) this.fixStep({ id: 'e' + Date.now(), t: Date.now() / 1000, phase: 'failed', text: j.error, done: true }); });
+    });
     getJSON('/api/astra').then((j) => { if (j) this.load(j); });
+  },
+  /** one step of a fix job; a job's steps share the id, the last one has done:true */
+  fixStep(d) {
+    const log = $('astraFixLog');
+    const empty = log.querySelector('.astra-empty'); if (empty) empty.remove();
+    const prev = this.pending['fix' + d.id];
+    if (prev) prev.classList.remove('pending');
+    const el = document.createElement('div');
+    el.className = 'fix-step ' + (d.phase || '') + (d.done ? '' : ' pending');
+    const t = document.createElement('span'); t.className = 'fx-t'; t.textContent = fmtClock(d.t, true);
+    const p = document.createElement('span'); p.className = 'fx-p'; p.textContent = d.phase || '';
+    const x = document.createElement('span'); x.className = 'fx-x';
+    x.textContent = (d.text || '') + (d.phase === 'done' && Array.isArray(d.reload) && d.reload.length ? '\n' + d.reload.join('\n') : '')
+      + (d.phase === 'done' && d.needs_restart ? '\nRESTART NEEDED (restart server button above)' : '')
+      + (d.phase === 'done' && d.reload_browser ? '\nstatic files changed: reload this page' : '');
+    el.appendChild(t); el.appendChild(p); el.appendChild(x);
+    log.appendChild(el);
+    if (d.done) delete this.pending['fix' + d.id]; else this.pending['fix' + d.id] = el;
+    if (d.diff) { $('astraDiff').textContent = d.diff; $('astraDiffWrap').hidden = false; }
+    log.scrollTop = log.scrollHeight;
   },
   /** initial fill from GET /api/astra (notes + setup transcript) */
   load(j) {
@@ -1054,6 +1090,9 @@ const astra = {
     if (Array.isArray(j.setup_transcript) && j.setup_transcript.length) {
       $('astraSetupLog').innerHTML = '';
       for (const m of j.setup_transcript) this.addChat(m.who === 'user' ? 'q' : 'a', m.text, m.id, true);
+    }
+    if (Array.isArray(j.fixes) && j.fixes.length) {
+      for (const f of j.fixes) this.fixStep({ id: f.id, t: f.t, phase: 'done', text: f.summary + ' → ' + (f.files || []).join(', ') + (f.needs_restart ? ' (restart needed)' : ''), done: true });
     }
   },
   toast(which, err) {
@@ -1120,6 +1159,7 @@ const astra = {
       else if (d.done) this.addChat('a', d.text, d.id, true);
       return;
     }
+    if (d.kind === 'fix') { this.fixStep(d); return; }
     if (d.kind === 'error') {
       if (d.role === 'setup') { if (this.pending[d.id]) this.addChat('a', 'Astra: ' + d.text, d.id, true, true); else this.toast('setup', d.text); }
       else this.addNote(Object.assign({}, d, { done: true }));
@@ -1131,10 +1171,10 @@ const astra = {
   update() {
     const a = store.status && store.status.astra;
     const btn = $('btnAstraLive');
-    if (!a) { $('astraLiveState').textContent = 'Astra off'; $('astraSetupState').textContent = 'Astra off'; btn.disabled = true; return; }
+    if (!a) { $('astraLiveState').textContent = 'Astra off'; $('astraSetupState').textContent = 'Astra off'; $('astraFixState').textContent = 'Astra off'; btn.disabled = true; $('btnAstraFix').disabled = true; return; }
     if (!a.available) {
-      $('astraLiveState').textContent = 'no key (OPENAI_KEY in BioProxal2026/.env)'; $('astraSetupState').textContent = 'no key';
-      btn.disabled = true; return;
+      $('astraLiveState').textContent = 'no key (OPENAI_KEY in BioProxal2026/.env)'; $('astraSetupState').textContent = 'no key'; $('astraFixState').textContent = 'no key';
+      btn.disabled = true; $('btnAstraFix').disabled = true; return;
     }
     btn.disabled = false;
     const l = a.live || {};
@@ -1144,6 +1184,12 @@ const astra = {
     const s = a.setup || {};
     $('astraSetupState').textContent = (s.busy ? 'answering… · ' : '') + (s.n_turns || 0) + ' turns · ' + (a.model || '');
     if (l.error && !l.busy) $('astraLiveState').textContent += ' · error';
+    const f = a.fix || {};
+    $('astraFixState').textContent = (f.busy ? 'working… · ' : '') + (f.n_fixes || 0) + ' applied' + (f.last ? ' · last: ' + f.last.slice(0, 60) : '') + (f.needs_restart ? ' · RESTART NEEDED' : '');
+    $('btnAstraFix').disabled = !!f.busy;
+    $('btnAstraRevert').disabled = !!f.busy || !(f.n_fixes > 0);
+    $('btnAstraRestart').hidden = !f.needs_restart;
+    $('btnAstraReload').hidden = !f.reload_browser;
   },
   /** analysis (2 s): the live channel table in the setup panel */
   updateChannels() {

@@ -3,6 +3,9 @@ sessions/
 sessions/**/report.md
 sessions/**/report.json
 
+# Astra in-flight fix records (before/after copies, diffs); the fixes themselves are in the tree
+astra_fixes/
+
 # Python
 __pycache__/
 *.pyc

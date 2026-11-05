@@ -233,7 +233,8 @@ class App:
                 rec["condition"] = blk["condition"] if blk else None
                 p.trial(rec)
                 return {"ok": True}
-        if action in ("astra_live", "astra_analyze", "astra_ask", "astra_check", "astra_clear"):
+        if action in ("astra_live", "astra_analyze", "astra_ask", "astra_check", "astra_clear",
+                      "astra_fix", "astra_revert", "astra_restart"):
             if self.astra is None:
                 raise ValueError("Astra is not wired (start without --astra off)")
             return self.astra.command(action, body)
@@ -298,7 +299,7 @@ class Handler(BaseHTTPRequestHandler):
             if u.path == "/api/sessions":
                 return self._json({"sessions": app.sessions()})
             if u.path == "/api/astra":
-                return self._json(app.astra.state() if app.astra else {"available": False, "notes": [], "setup_transcript": []})
+                return self._json(app.astra.state() if app.astra else {"available": False, "notes": [], "setup_transcript": [], "fixes": []})
             if u.path == "/api/report":
                 name = parse_qs(u.query).get("session", [""])[0]
                 return self._json({"ok": True, **app.report(name)})
