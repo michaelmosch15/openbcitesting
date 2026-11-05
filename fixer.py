@@ -80,6 +80,20 @@ def resolve_path(rel: str) -> Path:
     return p
 
 
+def _load(p: Path) -> tuple[str, str]:
+    """File text normalised to \\n plus its newline style, so a write puts the same style back
+    (the checkout is CRLF on Windows; a silent LF rewrite would show as a whole-file diff)."""
+    raw = p.read_bytes().decode("utf-8") if p.exists() else ""
+    nl = "\r\n" if "\r\n" in raw else "\n"
+    return raw.replace("\r\n", "\n"), nl
+
+
+def _save(p: Path, text: str, nl: str) -> None:
+    p.parent.mkdir(parents=True, exist_ok=True)
+    with open(p, "w", encoding="utf-8", newline="") as f:
+        f.write(text.replace("\r\n", "\n").replace("\n", nl))
+
+
 def file_tree() -> list[dict]:
     out = []
     for p in sorted(HERE.glob("*.py")) + sorted((HERE / "static").glob("*")) + sorted((HERE / "tests").glob("*.py")) \
@@ -127,13 +141,14 @@ def apply_edits(edits: list[dict], allow_prereg: bool) -> dict:
         raise ValueError(f"more than {MAX_EDITS} edits")
     texts: dict[str, str] = {}
     before: dict[str, str] = {}
+    newlines: dict[str, str] = {}
     for e in edits:
         rel = _rel(str(e.get("file") or ""))
         p = resolve_path(rel)
         if rel in PREREG_FILES and not allow_prereg:
             raise ValueError(f"{rel} holds pre-registered parameters; the operator did not allow changing them")
         if rel not in texts:
-            texts[rel] = p.read_text("utf-8") if p.exists() else ""
+            texts[rel], newlines[rel] = _load(p)
             before[rel] = texts[rel]
         find, repl = e.get("find"), e.get("replace")
         if not isinstance(find, str) or not isinstance(repl, str) or not find:
@@ -148,7 +163,7 @@ def apply_edits(edits: list[dict], allow_prereg: bool) -> dict:
                 raise ValueError(f"edit for {rel} changes pre-registered parameter(s) {hit}; the operator did not allow that")
         texts[rel] = texts[rel].replace(find, repl, 1)
     for rel, txt in texts.items():
-        resolve_path(rel).write_text(txt, "utf-8", newline="\n")
+        _save(resolve_path(rel), txt, newlines[rel])
     return {"files": {rel: (before[rel], texts[rel]) for rel in texts}}
 
 
@@ -357,7 +372,8 @@ class Fixer:
             ver = self.verify_fn(list(files))
             if not ver["ok"]:
                 for rel, (a, _) in files.items():
-                    resolve_path(rel).write_text(a, "utf-8", newline="\n")
+                    p = resolve_path(rel)
+                    _save(p, a, _load(p)[1])
                 failed = [s for s in ver["steps"] if not s["ok"]]
                 msg = "\n".join(f"{s['step']} FAILED:\n{s['out']}" for s in failed)
                 self._emit(job, "rejected", "verification failed, rolled back:\n" + msg[-1500:])
@@ -398,9 +414,9 @@ class Fixer:
             for rel in rec["files"]:
                 src = d / "before" / rel
                 p = resolve_path(rel)
-                cur = p.read_text("utf-8") if p.exists() else ""
-                txt = src.read_text("utf-8")
-                p.write_text(txt, "utf-8", newline="\n")
+                cur, nl = _load(p)
+                txt = _load(src)[0]
+                _save(p, txt, nl)
                 files[rel] = (cur, txt)
             info, restart, browser = self._swap_in(files)
             self.needs_restart = self.needs_restart or restart

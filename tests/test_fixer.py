@@ -107,6 +107,19 @@ class TestApplyEdits(Sandbox):
         fixer.apply_edits([{"file": "report.py", "find": "BLOCK_MIN_RHO = 0.5", "replace": "BLOCK_MIN_RHO = 0.3"}], True)
         self.assertIn("0.3", (self.root / "report.py").read_text("utf-8"))
 
+    def test_crlf_files_keep_their_line_endings(self):
+        p = self.root / "pipeline.py"
+        p.write_bytes(b"def f(x):\r\n    return x + 1\r\n\r\nVALUE = 2\r\n")
+        r = fixer.apply_edits([{"file": "pipeline.py", "find": "return x + 1", "replace": "return x + 2"}], False)
+        raw = p.read_bytes()
+        self.assertEqual(raw, b"def f(x):\r\n    return x + 2\r\n\r\nVALUE = 2\r\n")
+        self.assertNotIn("\r", r["files"]["pipeline.py"][0])      # texts in the record are normalised
+        # LF files stay LF (write_text would use the platform default, so write bytes)
+        q = self.root / "report.py"
+        q.write_bytes(b"BLOCK_MIN_RHO = 0.5\nX = 1\n")
+        fixer.apply_edits([{"file": "report.py", "find": "X = 1", "replace": "X = 3"}], False)
+        self.assertNotIn(b"\r", q.read_bytes())
+
     def test_refused_targets(self):
         with self.assertRaises(ValueError):
             fixer.apply_edits([{"file": ".env", "find": "x", "replace": "y"}], True)
