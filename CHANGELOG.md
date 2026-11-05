@@ -5,6 +5,29 @@ All notable changes to this project are documented here. The format follows
 
 ## [Unreleased]
 
+### Added
+
+- `astra.py`: the owner's OpenAI reviewer persona Astra (`gpt-6-astra`, key `OPENAI_KEY` from
+  `BioProxal2026/.env`, stdlib `urllib` streaming) as two dashboard panels.
+  `LiveAnalyst`: every `astra.live_interval_s` (60 s) a compact snapshot of the last
+  `astra.window_min` (5) minutes - EEG index as 10-s means, band samples with flags, pairs and
+  their r, session stats, block table / ordering / block rho, task accuracy, marks, channel
+  quality, baseline state - plus its own recent notes, one `[OK]` / `[WATCH]` / `[ISSUE]` note
+  back; `analyze()` for a structured interim analysis toward the gates; `ask()` for questions;
+  notes appended to `astra_notes.md` + `astra_notes.jsonl` in the session folder while
+  recording. `SetupHelper`: electrode-placement / montage / Cyton switches / quality-flag /
+  band-link coach that sees the live per-channel state with every question, `check()` for a
+  READY / NOT READY walk-through. Observational only (prompts forbid tuning suggestions).
+- API: `GET /api/astra`, commands `astra_live`, `astra_analyze`, `astra_ask`, `astra_check`,
+  `astra_clear`, `status.astra`, `event: astra` with streamed `delta` pieces (`docs/API.md`).
+- Browser: "Astra · live analyst" (feed, start/stop live, interval, run analysis, ask) and
+  "Astra · setup helper" (live channel table with quality / % full scale / raw peak / rel
+  theta / rel alpha, chat, check my setup, clear) row above Sessions.
+- `app.py --astra on|live|off`; `config.json` `astra` block (`model`, `live_interval_s`,
+  `window_min`, `max_tokens`, `memory_turns`, `auto_live`); `Pipeline.last_raw_peak`.
+- `tests/test_astra.py` (key loading, SSE chunk parser, snapshots and renderings, analyst
+  notes / history / files with a fake chat function, setup transcript, facade dispatch).
+
 ## [0.2.0] - 2026-11-03
 
 The dashboard becomes an experiment: a protocol runner induces known flow / non-flow

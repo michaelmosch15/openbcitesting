@@ -23,6 +23,7 @@ class App:
     def __init__(self, pipeline, board, recorder, band_manager, config: dict, log=print, protocol=None):
         self.pipeline, self.board, self.recorder, self.bands, self.cfg, self.log = pipeline, board, recorder, band_manager, config, log
         self.protocol = protocol            # ProtocolRunner, wired by app.py (may be None)
+        self.astra = None                   # astra.Astra, wired by app.py after construction (may be None)
         self.subscribers: list = []
         self.sub_lock = threading.Lock()
         self.sessions_dir = Path(__file__).parent / "sessions"
@@ -71,6 +72,7 @@ class App:
                 "filter": self.pipeline.filter_cfg, "flow_weights": self.pipeline.flow_weights,
                 "flow_index": self.pipeline.flow_status(),
                 "protocol": self.protocol.status() if self.protocol else None,
+                "astra": self.astra.status() if self.astra else None,
                 "clock": round(time.time(), 3)}
 
     # --- protocol runner callbacks ------------------------------------------------
@@ -213,6 +215,10 @@ class App:
                 rec["condition"] = blk["condition"] if blk else None
                 p.trial(rec)
                 return {"ok": True}
+        if action in ("astra_live", "astra_analyze", "astra_ask", "astra_check", "astra_clear"):
+            if self.astra is None:
+                raise ValueError("Astra is not wired (start without --astra off)")
+            return self.astra.command(action, body)
         raise ValueError(f"unknown action {action!r}")
 
 
@@ -273,6 +279,8 @@ class Handler(BaseHTTPRequestHandler):
                 return self._json(app.protocol.status() if app.protocol else {"active": False, "available": []})
             if u.path == "/api/sessions":
                 return self._json({"sessions": app.sessions()})
+            if u.path == "/api/astra":
+                return self._json(app.astra.state() if app.astra else {"available": False, "notes": [], "setup_transcript": []})
             if u.path == "/api/report":
                 name = parse_qs(u.query).get("session", [""])[0]
                 return self._json({"ok": True, **app.report(name)})

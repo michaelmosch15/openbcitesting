@@ -206,7 +206,38 @@
     </div>
   </div>
 
-  <!-- 8. SESSIONS -->
+  <!-- 8. ASTRA: live analyst + setup helper -->
+  <div class="row-astra">
+    <section class="widget" id="wAstraLive">
+      <div class="widget-head"><span>Astra · live analyst</span>
+        <span class="head-right head-ctl">
+          <span id="astraLiveState" class="muted-light">—</span>
+          <label>every <select id="selAstraInterval"><option value="30">30 s</option><option value="60" selected>60 s</option><option value="120">2 min</option><option value="300">5 min</option></select></label>
+          <button id="btnAstraLive" class="btn btn-mini">start live</button>
+          <button id="btnAstraAnalyze" class="btn btn-mini" title="structured interim analysis against the gates">run analysis</button>
+        </span></div>
+      <div class="widget-body astra-body">
+        <div id="astraNotes" class="astra-feed"><div class="astra-empty muted">Astra reads the last 5 minutes of EEG index, band flow and their pairs every tick and writes a short note here. Notes are saved to <code>astra_notes.md</code> in the session folder while recording.</div></div>
+        <div class="astra-ask"><input id="astraAskLive" type="text" maxlength="2000" placeholder="ask Astra about the data so far…"><button id="btnAstraAskLive" class="btn btn-blue">Ask</button></div>
+      </div>
+    </section>
+
+    <section class="widget" id="wAstraSetup">
+      <div class="widget-head"><span>Astra · setup helper</span>
+        <span class="head-right head-ctl">
+          <span id="astraSetupState" class="muted-light">—</span>
+          <button id="btnAstraCheck" class="btn btn-mini" title="channel-by-channel readiness check">check my setup</button>
+          <button id="btnAstraClear" class="btn btn-mini" title="forget this conversation">clear</button>
+        </span></div>
+      <div class="widget-body astra-body">
+        <table id="astraChan" class="chan-table"><thead><tr><th>ch</th><th>site</th><th>quality</th><th class="num">% scale</th><th class="num">peak µV</th><th class="num">rel θ</th><th class="num">rel α</th></tr></thead><tbody></tbody></table>
+        <div id="astraSetupLog" class="astra-feed astra-chat"><div class="astra-empty muted">Ask about electrode placement, the montage, railed channels, dongle / board switches or the band link. Every question carries the live channel table above, so "is ch3 ok?" is answered from what the server sees now.</div></div>
+        <div class="astra-ask"><input id="astraAskSetup" type="text" maxlength="2000" placeholder="e.g. where exactly does Fz go on the Mark IV?"><button id="btnAstraAskSetup" class="btn btn-blue">Ask</button></div>
+      </div>
+    </section>
+  </div>
+
+  <!-- 9. SESSIONS -->
   <details class="widget" id="wSessions">
     <summary class="widget-head"><span>Sessions</span><span class="head-right" id="sessCount"></span></summary>
     <div class="widget-body">

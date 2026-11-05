@@ -184,3 +184,59 @@ The dialog posts `rating` with all items; it can be dismissed (no rating stored)
 ### Session folder additions
 `task.csv` (t, block_index, condition, task, level, problem, answer, response, correct, rt_ms)
 and `ratings` inside `marks.csv` (kind `rating`, value = JSON). `report.py` scores per block.
+
+## Astra (v0.3)
+
+Two panels backed by the owner's OpenAI reviewer model (`astra.py`, model `gpt-6-astra`, key
+`OPENAI_KEY` read from the first `.env` above the project folder, i.e. `BioProxal2026/.env`;
+never sent to the browser). The server builds every prompt from its own state; the browser
+only sends questions and shows text. Requests run on background threads; results arrive as
+`event: astra`. One request at a time per panel (a second one gets `400 "Astra is still ..."`).
+
+| Route | Returns |
+|---|---|
+| `GET /api/astra` | `{"available": bool, "model": "gpt-6-astra", "live": {...}, "setup": {...}, "notes": [note, ...] (last 200), "setup_transcript": [{"id", "t", "who": "user"|"astra", "text"}, ...] (last 60)}` |
+
+### `POST /api/cmd` additions
+
+| action | fields | effect |
+|---|---|---|
+| `astra_live` | `enabled` bool, `interval_s` (>= 20, default `config.json` `astra.live_interval_s` 60) | start / stop the live analyst; the first note is written at once |
+| `astra_analyze` | - | one structured interim analysis (data quality, blocks so far, agreement, toward the gates, watch next) over the last 15 min; response `{"started": true}` |
+| `astra_ask` | `role` `analyst` (default) or `setup`, `text` (<= 2000 chars) | a question to the live analyst (answered from the live window + its earlier notes) or to the setup helper (answered from the live setup state + the placement reference) |
+| `astra_check` | - | the setup helper's channel-by-channel readiness check, ending in READY / NOT READY |
+| `astra_clear` | - | forget the setup conversation |
+
+### `status.astra` (in `event: status`)
+```json
+{"available": true, "model": "gpt-6-astra",
+ "live": {"enabled": false, "interval_s": 60.0, "window_s": 300.0, "busy": false, "model": "gpt-6-astra",
+          "n_notes": 0, "error": null, "next_in_s": null},
+ "setup": {"busy": false, "model": "gpt-6-astra", "n_turns": 0, "error": null}}
+```
+`available` is false when no `.env` with `OPENAI_KEY` was found; every `astra_*` command but
+`astra_live {enabled: false}` is then refused with 400. `status.astra` is `null` under
+`--astra off`.
+
+### `event: astra`
+One stream for both panels; `kind` tells them apart.
+
+| kind | fields | meaning |
+|---|---|---|
+| `note` / `analysis` / `reply` | `id`, `t`, `role: "analyst"`, `text`, `done`, `block`, `condition`, `question` (reply only) | a live-analyst entry: first with `done: false` and empty `text` (open a pending entry), then after the deltas with `done: true` and the full text |
+| `setup` | `id`, `t`, `question`, `text`, `done` | a setup-helper answer, same two-phase shape |
+| `delta` | `id`, `text` | a streamed piece of the entry with that `id`; append |
+| `error` | `id`, `t`, `role` (`analyst` / `setup`), `text`, `done: true` | the request failed (HTTP error, timeout, no key) |
+
+Live-analyst notes start with `[OK]`, `[WATCH]` or `[ISSUE]`; the browser colours the left
+border from that tag. The analyst sees, per tick: the protocol block, baseline state, the EEG
+index as 10-s means over the window, every band sample with its flags, the pairs in the window
+and their Pearson r, the session statistics, the block table, ordering and block rho, the
+current block's task accuracy, marks, per-channel quality, recording state, plus its own last
+`astra.memory_turns` exchanges. Its system prompt forbids proposing changes to weights,
+thresholds, gates or schedule (pre-registration).
+
+### Session folder additions
+While recording, every live-analyst entry is appended to `astra_notes.md` (one bullet per
+note with clock, block and condition) and `astra_notes.jsonl` (the note objects). Nothing is
+written when not recording; the setup conversation is never written.

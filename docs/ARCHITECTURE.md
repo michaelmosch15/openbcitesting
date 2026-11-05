@@ -37,9 +37,22 @@
 
 `app.py` wires it together: loads `config.json` (substituting `labels_8_flow` for
 `labels_8` under `--montage flow`), picks the board (`find_dongle()` / `--board` /
-`SimBoard` / `UdpBoard`), builds `Recorder`, `Pipeline`, `BandManager`, `ProtocolRunner`
-and `App`, starts the server on 127.0.0.1 and opens the browser. `report.py` runs offline
-on a session folder.
+`SimBoard` / `UdpBoard`), builds `Recorder`, `Pipeline`, `BandManager`, `ProtocolRunner`,
+`App` and (unless `--astra off`) `astra.Astra`, starts the server on 127.0.0.1 and opens the
+browser. `report.py` runs offline on a session folder.
+
+`astra.py` (v0.3) sits beside the pipeline and reads it: `LiveAnalyst` renders a text
+snapshot of the last 5 min (`live_snapshot` / `render_live`: EEG index as 10-s means, band
+samples with flags, pairs and their r, block table, task accuracy, quality) every
+`live_interval_s`, sends it with its own previous notes to the OpenAI model `gpt-6-astra`
+(stdlib `urllib`, streamed SSE, key from `BioProxal2026/.env`) and broadcasts the answer as
+`event: astra`; while recording, notes are appended to `astra_notes.md` / `.jsonl` in the
+session folder. `SetupHelper` answers placement / wiring / band-link questions from a
+`setup_snapshot` (board, per-channel quality and raw peaks, montage, frontal sites, band
+link) plus a fixed reference (10-20 sites, Mark IV handling, Cyton switches, quality flags,
+the README troubleshooting table and the manual hardware checks). Astra never writes to the
+pipeline, the recorder or the protocol; it is observational and its prompts forbid tuning
+suggestions.
 
 ## Data flow
 
@@ -151,6 +164,7 @@ server broadcasts a `mark` event.
 | `recorder` | `Recorder` | drains a `queue.Queue` of eeg/epoch/band/mark/trial items to CSV; flushes when the queue is empty |
 | `sse-tick` | `App` | the single transport loop: every 100 ms drains samples and pushes `samples`, `analysis`, `status` to all SSE subscribers |
 | `http` + one thread per connection | `ThreadingHTTPServer` | JSON API and the long-lived `/events` connections (keepalive comment every 15 s); `rating` / `trial` / `protocol_*` commands run here |
+| `astra-live` | `astra.LiveAnalyst` | wakes every second; when live and due, builds the snapshot and makes one streamed OpenAI call (up to ~3 min with retries), emitting `astra` events; `astra_analyze` / `astra_ask` / `astra_check` each run on a one-off daemon thread, serialised per panel by `LiveAnalyst._lock` / `SetupHelper._lock` |
 | main | `app.py` | waits for Ctrl-C, then stops board, band, recorder, server |
 
 Shared state is protected by `SampleBuffer.lock` (ring), `Pipeline.lock` (filter chain +

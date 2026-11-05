@@ -49,5 +49,13 @@
     "sim": 10
   },
   "history_hours": 4,
+  "astra": {
+    "model": "gpt-6-astra",
+    "live_interval_s": 60,
+    "window_min": 5,
+    "max_tokens": 1200,
+    "memory_turns": 8,
+    "auto_live": false
+  },
   "open_browser": true
 }

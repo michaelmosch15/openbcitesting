@@ -36,7 +36,8 @@ Command line (defaults from `config.json`):
 python app.py [--sim] [--montage default|flow] [--port 8765] [--board COMx]
               [--channels auto|8|16] [--source serial|udp] [--udp-port 12345]
               [--band supabase|ble|usb|sim|none] [--user-id <uuid>] [--band-name BioProxal4]
-              [--ble-address <mac>] [--no-browser] [--no-stream] [--config path/to/config.json]
+              [--ble-address <mac>] [--astra on|live|off] [--no-browser] [--no-stream]
+              [--config path/to/config.json]
 ```
 
 Install once: `pip install -r requirements.txt` (`bleak` only for `--band ble`).
@@ -71,6 +72,30 @@ the research review: `docs/EEG_FLOW_LITERATURE.md`.
 | `usb` | band on a cable through the firmware repo's tools (`band_link.py`) | every 2 s | Bench use; needs `usb.bioproxal_tools_dir` and `%USERPROFILE%\.bioproxal\master.key`. Read-only. |
 | `sim` | synthetic | every 2 s | With `--sim`: the simulator's hidden state, which follows the protocol's conditions, plus noise and a 20-s lag. |
 | `none` | - | - | EEG and self-report only. |
+
+## Astra: live analyst and setup helper
+
+Astra is the owner's OpenAI reviewer persona (model `gpt-6-astra`; the key is `OPENAI_KEY` in
+`BioProxal2026/.env`, the folder above this project, same as the firmware's
+`tools/astra_review.py`). Two panels above Sessions:
+
+- **Live analyst** - press *start live* (or run `--astra live`). Every 60 s (configurable)
+  Astra reads the last 5 minutes - EEG index, band flow with its flags, the pairs and their
+  correlation, block means, ordering and block rho, task accuracy, channel quality, baseline
+  state - compares it with what it said before, and writes one `[OK]` / `[WATCH]` / `[ISSUE]`
+  note. *Run analysis* gives a structured interim read toward gates G1-G3. Ask it questions in
+  the box. While recording, every note lands in `astra_notes.md` and `astra_notes.jsonl` in
+  the session folder. Astra is observational: its prompt forbids suggesting changes to the
+  index, thresholds, gates or schedule mid-session.
+- **Setup helper** - a live channel table (quality, % of full scale, raw peak, relative theta
+  and alpha) plus a chat that knows 10-20 placement, the Mark IV, the flow montage, the Cyton
+  switches, the quality flags and the band links, and sees the table with every question.
+  *Check my setup* walks channel by channel and ends READY / NOT READY.
+
+No `.env` with the key: the panels say so and stay disabled; everything else works.
+`--astra off` removes them. Settings in `config.json` `astra` (`live_interval_s`,
+`window_min`, `max_tokens`, `memory_turns`, `auto_live`). Nothing but the prompt text (numbers
+from the dashboard, your questions) leaves the machine; raw EEG never does.
 
 ## Reading the report
 
@@ -133,7 +158,8 @@ openbci_udp.py      UdpBoard: mirror the OpenBCI GUI Networking widget
 band_link.py        BandLink (USB), SimBandLink;  band_ble.py  BleBandLink;  supabase_link.py
 recorder.py         Recorder: session folders, CSVs (eeg_raw, epochs, band, marks, task)
 report.py           offline per-block report with the pre-registered gates
-static/             index.html, app.js (task + rating dialog), style.css
+astra.py            Astra (gpt-6-astra): LiveAnalyst notes / analysis / Q&A, SetupHelper chat
+static/             index.html, app.js (task + rating dialog + Astra panels), style.css
 config.json         defaults: port, board, labels_8 / labels_8_flow / labels_16, filters,
                     flow_index (weights, baseline, artifact thresholds, Welch window)
 docs/               EEG_FLOW_LITERATURE, EEG_FLOW_INDEX, VALIDATION_PROTOCOL, API,

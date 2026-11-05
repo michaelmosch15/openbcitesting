@@ -149,6 +149,9 @@ def main(argv=None) -> int:
     ap.add_argument("--montage", choices=["default", "flow"], default="default",
                     help="8-ch electrode labels: 'default' = Mark IV factory sites (Fp1 Fp2 C3 C4 P7 P8 O1 O2); "
                          "'flow' = the re-sited flow montage in config.json labels_8_flow (Fz F3 F4 Cz C3 C4 P3 P4)")
+    ap.add_argument("--astra", choices=["on", "off", "live"], default="on",
+                    help="Astra panels (OpenAI gpt-6-astra, key from BioProxal2026/.env): on = ready, "
+                         "live = start the live analyst at once, off = no Astra")
     ap.add_argument("--no-browser", action="store_true")
     ap.add_argument("--no-stream", action="store_true", help="do not start streaming automatically")
     ap.add_argument("--config", default=str(HERE / "config.json"))
@@ -173,6 +176,16 @@ def main(argv=None) -> int:
                             on_event=lambda e: app.on_protocol_event(e),
                             on_mark=lambda k, v, n="": app.on_protocol_mark(k, v, n), log=log)
     app = App(pipeline, board, recorder, bands, cfg, log=log, protocol=runner)
+    if args.astra != "off":
+        from astra import Astra
+        acfg = dict(cfg.get("astra") or {})
+        if args.astra == "live":
+            acfg["auto_live"] = True
+        try:
+            app.astra = Astra(pipeline, app.status, acfg, app.broadcast, log=log, recorder=recorder,
+                              raw_peak_fn=lambda: pipeline.last_raw_peak)
+        except Exception as e:  # noqa: BLE001
+            log(f"[astra] disabled: {e}")
     band_source = args.band or ("sim" if args.sim else cfg.get("band_source", "supabase"))
     pipeline.set_band_source(band_source)
     try:

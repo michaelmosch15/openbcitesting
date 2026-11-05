@@ -114,6 +114,7 @@ class Pipeline:
         self.band_source = "none"
         self.pair_window_s = 60.0
         self.latest_band = None
+        self.last_raw_peak = None     # |uV| max per channel of the last chunk (setup helper)
         self.stats = self._empty_stats()
         board.buffer.listeners.append(self._on_samples)
 
@@ -140,7 +141,9 @@ class Pipeline:
     def _on_samples(self, eeg: np.ndarray, accel: np.ndarray, t: np.ndarray, count0: int) -> None:
         with self.lock:
             filt = self.chain.process(eeg)
-            self._pending.append((float(t[0]), filt.astype(np.float32), np.abs(eeg).max(axis=0)))
+            peak = np.abs(eeg).max(axis=0)
+            self.last_raw_peak = peak.tolist()
+            self._pending.append((float(t[0]), filt.astype(np.float32), peak))
             self._since_epoch += len(eeg)
             due = self._since_epoch >= int(self.fs * self.epoch_s)
             if due:

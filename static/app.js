@@ -1010,6 +1010,158 @@ function renderMarkdown(md) {
 }
 
 // ----------------------------------------------------------------------------
+// Astra: live analyst feed + setup helper chat (docs/API.md "Astra (v0.3)")
+// SSE `astra` events: {kind: note|analysis|reply|setup|error|delta, id, t, text, done, ...}.
+// A non-delta event with done:false opens a pending bubble; `delta` appends text; done:true
+// replaces the bubble's text with the final note.
+// ----------------------------------------------------------------------------
+const astra = {
+  pending: {},          // id -> element being streamed into
+  init() {
+    $('btnAstraLive').addEventListener('click', () => {
+      const live = store.status && store.status.astra && store.status.astra.live && store.status.astra.live.enabled;
+      cmd('astra_live', { enabled: !live, interval_s: parseInt($('selAstraInterval').value, 10) }).then((j) => { if (!j.ok) this.toast('live', j.error); });
+    });
+    $('selAstraInterval').addEventListener('change', () => {
+      const live = store.status && store.status.astra && store.status.astra.live && store.status.astra.live.enabled;
+      if (live) cmd('astra_live', { enabled: true, interval_s: parseInt($('selAstraInterval').value, 10) });
+    });
+    $('btnAstraAnalyze').addEventListener('click', () => cmd('astra_analyze').then((j) => { if (!j.ok) this.toast('live', j.error); }));
+    const askLive = () => {
+      const t = $('astraAskLive').value.trim(); if (!t) return;
+      $('astraAskLive').value = '';
+      cmd('astra_ask', { role: 'analyst', text: t }).then((j) => { if (!j.ok) this.toast('live', j.error); });
+    };
+    $('btnAstraAskLive').addEventListener('click', askLive);
+    $('astraAskLive').addEventListener('keydown', (e) => { if (e.key === 'Enter') askLive(); });
+    const askSetup = () => {
+      const t = $('astraAskSetup').value.trim(); if (!t) return;
+      $('astraAskSetup').value = '';
+      cmd('astra_ask', { role: 'setup', text: t }).then((j) => { if (!j.ok) this.toast('setup', j.error); });
+    };
+    $('btnAstraAskSetup').addEventListener('click', askSetup);
+    $('astraAskSetup').addEventListener('keydown', (e) => { if (e.key === 'Enter') askSetup(); });
+    $('btnAstraCheck').addEventListener('click', () => cmd('astra_check').then((j) => { if (!j.ok) this.toast('setup', j.error); }));
+    $('btnAstraClear').addEventListener('click', () => cmd('astra_clear').then(() => { $('astraSetupLog').innerHTML = ''; }));
+    getJSON('/api/astra').then((j) => { if (j) this.load(j); });
+  },
+  /** initial fill from GET /api/astra (notes + setup transcript) */
+  load(j) {
+    if (Array.isArray(j.notes) && j.notes.length) {
+      $('astraNotes').innerHTML = '';
+      for (const n of j.notes) this.addNote(Object.assign({ done: true }, n));
+    }
+    if (Array.isArray(j.setup_transcript) && j.setup_transcript.length) {
+      $('astraSetupLog').innerHTML = '';
+      for (const m of j.setup_transcript) this.addChat(m.who === 'user' ? 'q' : 'a', m.text, m.id, true);
+    }
+  },
+  toast(which, err) {
+    if (!err) return;
+    if (which === 'setup') this.addChat('a', 'Astra: ' + err, 'e' + Date.now(), true, true);
+    else this.addNote({ kind: 'error', id: 'e' + Date.now(), t: Date.now() / 1000, text: String(err), done: true });
+  },
+  tagClass(text) {
+    const m = /^\s*\[(OK|WATCH|ISSUE)\]/i.exec(text || '');
+    return m ? m[1].toLowerCase() : '';
+  },
+  /** analyst feed entry; kind note|analysis|reply|error */
+  addNote(d) {
+    const feed = $('astraNotes');
+    const empty = feed.querySelector('.astra-empty'); if (empty) empty.remove();
+    let el = this.pending[d.id];
+    if (!el) {
+      el = document.createElement('div');
+      const meta = document.createElement('div'); meta.className = 'astra-meta';
+      const where = (d.block != null ? 'block ' + d.block + (d.condition ? ' · ' + d.condition : '') : '');
+      meta.innerHTML = '<span>' + esc(fmtClock(d.t, true)) + '</span>' + (where ? '<span>' + esc(where) + '</span>' : '')
+        + (d.kind === 'analysis' ? '<span class="tag">analysis</span>' : d.kind === 'reply' ? '<span class="tag">Q&amp;A</span>' : d.kind === 'error' ? '<span class="tag bad">error</span>' : '');
+      if (d.question) { const qd = document.createElement('div'); qd.className = 'astra-qline'; qd.textContent = 'Q: ' + d.question; el.appendChild(meta); el.appendChild(qd); }
+      else el.appendChild(meta);
+      const body = document.createElement('div'); body.className = 'astra-text';
+      el.appendChild(body);
+      feed.appendChild(el);
+    }
+    el.className = 'astra-note ' + (d.kind || 'note') + (d.done ? '' : ' pending');
+    const body = el.querySelector('.astra-text');
+    if (d.done) {
+      body.textContent = d.text || '';
+      el.classList.add(this.tagClass(d.text));
+      delete this.pending[d.id];
+    } else {
+      this.pending[d.id] = el;
+    }
+    feed.scrollTop = feed.scrollHeight;
+    return el;
+  },
+  /** setup chat bubble; who q|a */
+  addChat(who, text, id, done, isError) {
+    const log = $('astraSetupLog');
+    const empty = log.querySelector('.astra-empty'); if (empty) empty.remove();
+    let el = who === 'a' ? this.pending[id] : null;
+    if (!el) { el = document.createElement('div'); log.appendChild(el); }
+    el.className = who === 'q' ? 'astra-q' : 'astra-a' + (done ? '' : ' pending') + (isError ? ' error' : '');
+    el.textContent = text || '';
+    if (who === 'a') { if (done) delete this.pending[id]; else this.pending[id] = el; }
+    log.scrollTop = log.scrollHeight;
+    return el;
+  },
+  onEvent(d) {
+    if (!d || !d.kind) return;
+    if (d.kind === 'delta') {
+      const el = this.pending[d.id]; if (!el) return;
+      const body = el.querySelector('.astra-text') || el;
+      body.textContent += d.text || '';
+      const feed = el.parentElement; if (feed) feed.scrollTop = feed.scrollHeight;
+      return;
+    }
+    if (d.kind === 'setup') {
+      if (!d.done && !this.pending[d.id]) { this.addChat('q', d.question, d.id + 'u', true); this.addChat('a', '', d.id, false); }
+      else if (d.done) this.addChat('a', d.text, d.id, true);
+      return;
+    }
+    if (d.kind === 'error') {
+      if (d.role === 'setup') { if (this.pending[d.id]) this.addChat('a', 'Astra: ' + d.text, d.id, true, true); else this.toast('setup', d.text); }
+      else this.addNote(Object.assign({}, d, { done: true }));
+      return;
+    }
+    this.addNote(d);   // note | analysis | reply
+  },
+  /** status (1 s): header state + live button */
+  update() {
+    const a = store.status && store.status.astra;
+    const btn = $('btnAstraLive');
+    if (!a) { $('astraLiveState').textContent = 'Astra off'; $('astraSetupState').textContent = 'Astra off'; btn.disabled = true; return; }
+    if (!a.available) {
+      $('astraLiveState').textContent = 'no key (OPENAI_KEY in BioProxal2026/.env)'; $('astraSetupState').textContent = 'no key';
+      btn.disabled = true; return;
+    }
+    btn.disabled = false;
+    const l = a.live || {};
+    btn.textContent = l.enabled ? 'stop live' : 'start live';
+    btn.className = 'btn btn-mini' + (l.enabled ? ' btn-stop' : '');
+    $('astraLiveState').textContent = (l.busy ? 'writing… · ' : '') + (l.enabled ? 'live · next in ' + Math.round(l.next_in_s || 0) + ' s · ' : 'idle · ') + (l.n_notes || 0) + ' notes · ' + (a.model || '');
+    const s = a.setup || {};
+    $('astraSetupState').textContent = (s.busy ? 'answering… · ' : '') + (s.n_turns || 0) + ' turns · ' + (a.model || '');
+    if (l.error && !l.busy) $('astraLiveState').textContent += ' · error';
+  },
+  /** analysis (2 s): the live channel table in the setup panel */
+  updateChannels() {
+    const an = store.analysis; if (!an) return;
+    const q = an.quality || [], rel = (an.bands && an.bands.rel) || {};
+    const th = rel.theta || [], al = rel.alpha || [], peak = store.lastRawPeak || [];
+    const tb = $('astraChan').querySelector('tbody');
+    const rows = [];
+    for (let i = 0; i < (store.nCh || q.length); i++) {
+      const qi = q[i] || {};
+      const col = QUALITY_COLORS[qi.state] || QUALITY_COLORS.unknown;
+      rows.push('<tr' + (chEnabled(i) ? '' : ' class="off"') + '><td>' + (i + 1) + '</td><td>' + esc(chLabel(i)) + '</td><td class="q" style="color:' + col + '"><i class="sw" style="background:' + col + '"></i>' + esc(qi.state || '—') + '</td><td class="num">' + (isNum(qi.pct) ? qi.pct.toFixed(0) : '—') + '</td><td class="num">' + (isNum(peak[i]) ? peak[i].toFixed(0) : '—') + '</td><td class="num">' + (isNum(th[i]) ? th[i].toFixed(2) : '—') + '</td><td class="num">' + (isNum(al[i]) ? al[i].toFixed(2) : '—') + '</td></tr>');
+    }
+    tb.innerHTML = rows.join('');
+  },
+};
+
+// ----------------------------------------------------------------------------
 // Nav bar: stream/record buttons, filter controls, status chips
 // ----------------------------------------------------------------------------
 const navBar = {
@@ -1481,12 +1633,14 @@ function onAnalysis(d) {
   widgets.lag.draw();
   statsTiles.update();
   bandPanel.update();
+  astra.updateChannels();
 }
 
 function onStatus(d) {
   store.status = d;
   navBar.update();
   bandPanel.update();
+  astra.update();
   if (d && d.protocol && typeof d.protocol === 'object') experiment.setProtocol(d.protocol);   // absent until the server is updated
 }
 
@@ -1564,6 +1718,7 @@ function connect() {
   es.addEventListener('band', (ev) => { const d = parse(ev); if (d) onBand(d); });
   es.addEventListener('mark', (ev) => { const d = parse(ev); if (d) onMark(d); });
   es.addEventListener('protocol', (ev) => { const d = parse(ev); if (d) onProtocol(d); });
+  es.addEventListener('astra', (ev) => { const d = parse(ev); if (d) astra.onEvent(d); });
   es.addEventListener('error', () => {
     store.connected = false;
     navBar.setChip('chipConn', 'disconnected · retry in ' + Math.round(backoff / 1000) + ' s', 'chip-bad');
@@ -1593,6 +1748,7 @@ function boot() {
   taskRunner.init();
   ratingDialog.init();
   experiment.init();
+  astra.init();
   buildLegends();
   redrawAnalysisWidgets();
   widgets.flow.draw();
