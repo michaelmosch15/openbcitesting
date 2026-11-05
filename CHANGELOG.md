@@ -49,8 +49,8 @@ All notable changes to this project are documented here. The format follows
   (`GET /api/band_console`) and to `band_console.log` in the session; `band.csv` gains the
   vitals columns; `history.vitals` + `event: band` carry them to the band panel (vitals rows,
   10-min HR / SpO2 / PI / raw-flow chart, console tail). `usb.bioproxal_tools_dir` may be null:
-  the tools are found by walking up to `worktrees/v0629/tools`. Raw red/IR PPG is NOT exported by
-  a production band (claim 15; research builds only) - this is every derived value, per second.
+  the tools are found by walking up to `worktrees/v0629/tools`. Raw red/IR PPG is not exported
+  by a production band - this is every derived value the band computes, per second.
 - `--montage frontal` (`labels_8_frontal`: Fp1 Fp2 AF3 AF4 F3 F4 F7 F8) for the headset as
   built: all eight combs across the forehead band.
 - Simulator demo: with `--sim` (`config.json` `sim.auto_rate`, default true) each

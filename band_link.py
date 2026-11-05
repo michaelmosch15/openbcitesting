@@ -16,9 +16,8 @@ band prints. Two line kinds carry data:
     [pub] live  hr= 71.2 flow=0.62 anom=0.120 mlp=0.080 zrms=0.300 [fcal=...] [fhi=..] [settling]
 
 plus `[vbat] battery 3127 mV ...`, sleep lines (`OFF-WRIST SLEEP`, `USELESS-CONTACT SLEEP`)
-and `warming up`. The band's raw red/IR PPG is NOT available from a production image (claim
-15 of the filed patent gates raw export to research builds); what this reads is every derived
-value the band computes, once a second.
+and `warming up`. The band's raw red/IR PPG is not available from a production image; what
+this reads is every derived value the band computes, once a second.
 
 Read-only: no baseline reset, no log clear, no flash. Closing the port sends LOCK.
 With --sim the "band" is a noisy copy of the simulator's hidden flow state.
