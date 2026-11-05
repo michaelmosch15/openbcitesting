@@ -49,6 +49,9 @@
     "sim": 10
   },
   "history_hours": 4,
+  "sim": {
+    "auto_rate": true
+  },
   "astra": {
     "model": "gpt-6-astra",
     "live_interval_s": 60,

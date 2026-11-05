@@ -92,7 +92,25 @@ class App:
                 self.board.set_condition(ev.get("condition"))
             elif phase in ("done", "stopped"):
                 self.board.set_condition(None)
+            elif phase == "rating_due" and self.cfg.get("sim", {}).get("auto_rate", True):
+                # simulator only: the "participant" rates the block the way the induced state
+                # predicts, so an unattended --sim run reaches a verdict (marked simulated)
+                threading.Timer(3.0, self._sim_rate, args=(ev.get("block_index"), ev.get("condition"))).start()
         self.broadcast("protocol", ev)
+
+    SIM_RATINGS = {"boredom": (2.5, 1, 0.25), "flow": (6.0, 2, 0.85), "overload": (3.0, 3, 0.30), "work": (4.5, 2, 0.55)}
+
+    def _sim_rate(self, block_index, condition) -> None:
+        if self.protocol is None or self.protocol.pending_rating != block_index:
+            return
+        import random
+        core, demand, overall = self.SIM_RATINGS.get(condition or "", (4.0, 2, 0.5))
+        items = {k: float(min(7, max(1, round(core + random.uniform(-0.6, 0.6)))))
+                 for k in ("challenge", "fluent", "time", "concentrate", "clear", "absorbed", "automatic", "know", "control", "lost")}
+        items["demand"] = float(demand)
+        items["flow_overall"] = round(min(1.0, max(0.0, overall + random.uniform(-0.05, 0.05))), 2)
+        self.protocol.rate(int(block_index), items, "simulated rating (sim.auto_rate)")
+        self.log(f"[sim] auto-rated block {block_index} ({condition})")
 
     def on_protocol_mark(self, kind: str, value, note: str = "") -> None:
         m = self.pipeline.mark(kind, value, note)

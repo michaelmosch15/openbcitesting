@@ -1000,6 +1000,11 @@ def render_markdown(res: dict) -> str:
              + ("Block-level design (protocol session); details below, full verdict section at the end."
                 if P else "No protocol was run in this session: epoch-level design (the only one available)."))
     L.append("")
+    if ((res.get("meta") or {}).get("board") or {}).get("kind") == "sim":
+        L.append("**Simulated session.** Synthetic board and band (`--sim`), ratings may be auto-generated: "
+                 "this demonstrates that the pipeline, protocol and gates work end to end. It says nothing "
+                 "about a real BioProxal band.")
+        L.append("")
     if P:
         L.extend(_render_protocol(P))
         L.append("")

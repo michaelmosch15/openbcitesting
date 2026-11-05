@@ -27,6 +27,11 @@ All notable changes to this project are documented here. The format follows
   `window_min`, `max_tokens`, `memory_turns`, `auto_live`); `Pipeline.last_raw_peak`.
 - `tests/test_astra.py` (key loading, SSE chunk parser, snapshots and renderings, analyst
   notes / history / files with a fake chat function, setup transcript, facade dispatch).
+- Simulator demo: with `--sim` (`config.json` `sim.auto_rate`, default true) each
+  `rating_due` is answered 3 s later with a Flow Short Scale rating that follows the induced
+  condition (boredom low / flow high / overload low, demand 1 / 2 / 3), so an unattended
+  `sim_quick` run reaches a verdict. `report.py` prints a "Simulated session" banner for
+  sessions recorded from the sim board.
 
 ## [0.2.0] - 2026-11-03
 
