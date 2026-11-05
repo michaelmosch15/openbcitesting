@@ -73,6 +73,8 @@ class App:
                 "flow_index": self.pipeline.flow_status(),
                 "protocol": self.protocol.status() if self.protocol else None,
                 "astra": self.astra.status() if self.astra else None,
+                "autocal": self.pipeline.autocal.status() if self.pipeline.autocal is not None else None,
+                "labels": list(self.pipeline.labels),
                 "clock": round(time.time(), 3)}
 
     # --- protocol runner callbacks ------------------------------------------------
@@ -233,6 +235,39 @@ class App:
                 rec["condition"] = blk["condition"] if blk else None
                 p.trial(rec)
                 return {"ok": True}
+        if action == "set_labels":
+            labels = p.set_labels(list(body.get("labels") or []))
+            note = str(body.get("note") or "")[:200]
+            m = p.mark("note", "labels " + " ".join(labels), note)
+            self.broadcast("mark", m)
+            self.broadcast("labels", {"labels": labels, "positions": p.hello()["positions"]})
+            self.log(f"[labels] {' '.join(labels)}" + (f" ({note})" if note else ""))
+            return {"labels": labels}
+        if action in ("autocal_start", "autocal_phase", "autocal_solve", "autocal_stop", "autocal_sim"):
+            import autocal
+            if action == "autocal_start":
+                p.autocal = autocal.Capture(p.fs, p.n_ch)
+                return {"autocal": p.autocal.status()}
+            if action == "autocal_sim":
+                # synthetic run for the --sim board: a known hidden placement to recover
+                truth = list(body.get("truth") or ["AF7", "Fp1", "Fp2", "AF8", "F7", "F3", "F4", "F8"])[: p.n_ch]
+                p.autocal = autocal.capture_from_synthetic(truth, fs=p.fs, seed=int(body.get("seed") or 1))
+                return {"autocal": p.autocal.status(), "truth": truth}
+            if p.autocal is None:
+                raise ValueError("no calibration running (autocal_start first)")
+            if action == "autocal_phase":
+                p.autocal.set_phase(body.get("phase"))
+                return {"autocal": p.autocal.status()}
+            if action == "autocal_stop":
+                p.autocal = None
+                return {"autocal": None}
+            feat = autocal.features(p.autocal)
+            slots = body.get("slots") or (self.cfg.get("autocal") or {}).get("slots") or None
+            res = autocal.solve(feat, slots=slots)
+            res["capture"] = p.autocal.status()
+            res["current_labels"] = list(p.labels)
+            self.broadcast("autocal", res)
+            return {"autocal": res}
         if action in ("astra_live", "astra_analyze", "astra_ask", "astra_check", "astra_clear",
                       "astra_fix", "astra_revert", "astra_restart"):
             if self.astra is None:

@@ -53,6 +53,18 @@ All notable changes to this project are documented here. The format follows
   by a production band - this is every derived value the band computes, per second.
 - `--montage frontal` (`labels_8_frontal`: Fp1 Fp2 AF3 AF4 F3 F4 F7 F8) for the headset as
   built: all eight combs across the forehead band.
+- `autocal.py` + `edfread.py` + `tools/build_autocal_template.py` + `autocal_template.json`:
+  auto-calibration of electrode placement. A 75-s guided capture (rest 30 s, blinks 16 s,
+  left/right eye movements 16 s, jaw clench 6 s) gives per-channel blink amplitude, signed
+  horizontal-EOG loading, EMG gain and the 1-30 Hz correlation matrix; a solver (Hungarian
+  start + 2-opt with restarts, heog sign free) assigns channels to frontal 10-10 sites
+  against a template built from PhysioNet EEGMMIDB (8 subjects, 138 blinks, 76 saccades,
+  re-referenced to T9/T10) with a geometry fallback. Commands `autocal_start` / `_phase` /
+  `_solve` / `_stop` / `_sim`, `set_labels` (live relabel + mark + `event: labels`),
+  `event: autocal`, `status.labels`, `config.json` `autocal.slots`. Browser: "auto-calibrate
+  placement" modal in the head plot with paced prompts, a per-channel confidence table and
+  Apply. Tests: `tests/test_autocal.py` (recovery of a known placement from synthetic
+  signals, 7-8 of 8 with the helmet slots; neighbour-level with all 17 sites).
 - Simulator demo: with `--sim` (`config.json` `sim.auto_rate`, default true) each
   `rating_due` is answered 3 s later with a Flow Short Scale rating that follows the induced
   condition (boredom low / flow high / overload low, demand 1 / 2 / 3), so an unattended

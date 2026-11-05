@@ -1062,6 +1062,111 @@ function renderMarkdown(md) {
 }
 
 // ----------------------------------------------------------------------------
+// Placement auto-calibration (docs/API.md "Auto-calibration"): the browser paces the four
+// phases and tells the server which one is on; the server captures, solves and replies
+// with `event: autocal`; "Apply labels" posts set_labels and `event: labels` relabels the UI.
+// ----------------------------------------------------------------------------
+const autocal = {
+  PHASES: [
+    { phase: 'rest', s: 30, prompt: 'Rest: eyes open, look at a point, stay still' },
+    { phase: 'blink', s: 16, prompt: 'Blink firmly now… again every 2 s', cue: (t) => (Math.floor(t / 2) % 2 === 0 ? 'BLINK' : '…') },
+    { phase: 'look', s: 16, prompt: 'Eyes far LEFT / RIGHT, head still', cue: (t) => (Math.floor(t / 1.5) % 2 === 0 ? 'look LEFT' : 'look RIGHT') },
+    { phase: 'clench', s: 6, prompt: 'Clench your jaw firmly' },
+  ],
+  running: false, timer: null, result: null,
+  init() {
+    $('btnAutocal').addEventListener('click', () => this.open());
+    $('autocalClose').addEventListener('click', () => this.close());
+    $('acStart').addEventListener('click', () => this.start());
+    $('acApply').addEventListener('click', () => this.apply());
+  },
+  open() {
+    $('autocalModal').hidden = false;
+    $('acResult').hidden = true; $('acApply').hidden = true;
+    $('acPrompt').textContent = 'Press START when ready.'; $('acPrompt').className = 'ac-prompt'; $('acCountdown').textContent = '--';
+    document.querySelectorAll('.ac-step').forEach((el) => el.classList.remove('cur', 'done'));
+  },
+  close() {
+    if (this.running) { clearInterval(this.timer); this.running = false; cmd('autocal_stop'); }
+    $('autocalModal').hidden = true;
+  },
+  async start() {
+    if (this.running) return;
+    if ($('acSimChk').checked) {
+      const j = await cmd('autocal_sim');
+      if (!j.ok) { $('acPrompt').textContent = 'failed: ' + j.error; return; }
+      $('acPrompt').textContent = 'simulated capture (hidden truth ' + (j.truth || []).join(' ') + '), solving…';
+      return this.solve();
+    }
+    const j = await cmd('autocal_start');
+    if (!j.ok) { $('acPrompt').textContent = 'failed: ' + j.error; return; }
+    this.running = true; $('acStart').disabled = true;
+    let idx = -1, left = 0, tInPhase = 0;
+    const next = async () => {
+      idx++;
+      document.querySelectorAll('.ac-step').forEach((el, i) => { el.classList.toggle('cur', i === idx); el.classList.toggle('done', i < idx); });
+      if (idx >= this.PHASES.length) { clearInterval(this.timer); this.running = false; $('acStart').disabled = false; $('acPrompt').textContent = 'solving…'; $('acCountdown').textContent = '--'; await cmd('autocal_phase', { phase: null }); return this.solve(); }
+      left = this.PHASES[idx].s; tInPhase = 0;
+      await cmd('autocal_phase', { phase: this.PHASES[idx].phase });
+    };
+    await next();
+    this.timer = setInterval(() => {
+      const ph = this.PHASES[idx]; if (!ph) return;
+      const cue = ph.cue ? ph.cue(tInPhase) : '';
+      const el = $('acPrompt'); el.textContent = ph.prompt + (cue ? '  —  ' + cue : '');
+      el.className = 'ac-prompt' + (cue === 'look LEFT' ? ' left' : cue === 'look RIGHT' ? ' right' : '');
+      $('acCountdown').textContent = String(Math.ceil(left));
+      left -= 0.5; tInPhase += 0.5;
+      if (left <= 0) next();
+    }, 500);
+  },
+  async solve() {
+    const j = await cmd('autocal_solve');
+    if (!j.ok) { $('acPrompt').textContent = 'solve failed: ' + j.error; $('acStart').disabled = false; return; }
+    this.show(j.autocal);
+  },
+  show(r) {
+    this.result = r;
+    $('acPrompt').textContent = 'Proposal ready (margin ' + (isNum(r.margin) ? (r.margin * 100).toFixed(0) + ' %' : '—') + ' to the runner-up)';
+    $('acPrompt').className = 'ac-prompt';
+    const tb = $('acTable').querySelector('tbody'); tb.innerHTML = '';
+    const f = r.features || {};
+    r.labels.forEach((lab, i) => {
+      const cur = (r.current_labels || [])[i] || chLabel(i);
+      const conf = (r.confidence || [])[i];
+      const tr = document.createElement('tr');
+      const v = (arr) => (Array.isArray(arr) && isNum(arr[i]) ? arr[i].toFixed(2) : '—');
+      tr.innerHTML = '<td>' + (i + 1) + '</td><td>' + esc(cur) + '</td><td class="' + (cur !== lab ? 'changed' : '') + '">' + esc(lab) + '</td><td class="' + (conf >= 0.8 ? 'conf-hi' : conf < 0.5 ? 'conf-lo' : '') + '">' + (isNum(conf) ? Math.round(conf * 100) + ' %' : '—') + '</td><td>' + v(f.blink) + '</td><td>' + v(f.heog) + '</td><td>' + v(f.emg) + '</td>';
+      tb.appendChild(tr);
+    });
+    const notes = Array.isArray(f.notes) && f.notes.length ? ' · ' + f.notes.join(', ') : '';
+    const ru = Array.isArray(r.runner_ups) && r.runner_ups.length ? ' · runner-up: ' + r.runner_ups[0].labels.join(' ') : '';
+    $('acSummary').textContent = 'template: ' + (r.template || '?') + ' · ' + (r.n_candidates || '?') + ' candidate sites · blinks found: ' + (f.n_blink != null ? f.n_blink : '—') + ' · eye-movement axis explains ' + (isNum(f.heog_var) ? Math.round(f.heog_var * 100) + ' %' : '—') + ' of the look-phase variance' + notes + ru + (r.truth ? ' · hidden truth: ' + r.truth.join(' ') : '');
+    $('acResult').hidden = false; $('acApply').hidden = false; $('acStart').disabled = false;
+  },
+  async apply() {
+    if (!this.result) return;
+    const j = await cmd('set_labels', { labels: this.result.labels, note: 'auto-calibration, margin ' + this.result.margin });
+    if (!j.ok) { $('acSummary').textContent = 'apply failed: ' + j.error; return; }
+    $('acPrompt').textContent = 'Labels applied: ' + j.labels.join(' ');
+    $('acApply').hidden = true;
+  },
+  onEvent(r) { if (r && Array.isArray(r.labels)) this.show(r); },
+};
+
+/** event: labels - relabel every widget live */
+function onLabels(d) {
+  if (!d || !Array.isArray(d.labels)) return;
+  store.labels = d.labels;
+  if (d.positions) store.positions = d.positions;
+  buildLegends();
+  widgets.head.layout();
+  redrawAnalysisWidgets();
+  store.ringDirty = true;
+  astra.updateChannels();
+}
+
+// ----------------------------------------------------------------------------
 // Astra: live analyst feed + setup helper chat (docs/API.md "Astra (v0.3)")
 // SSE `astra` events: {kind: note|analysis|reply|setup|error|delta, id, t, text, done, ...}.
 // A non-delta event with done:false opens a pending bubble; `delta` appends text; done:true
@@ -1737,6 +1842,7 @@ function onAnalysis(d) {
 
 function onStatus(d) {
   store.status = d;
+  if (Array.isArray(d.labels) && d.labels.length && d.labels.join('|') !== store.labels.join('|')) onLabels({ labels: d.labels });
   navBar.update();
   bandPanel.update();
   astra.update();
@@ -1823,6 +1929,8 @@ function connect() {
   es.addEventListener('mark', (ev) => { const d = parse(ev); if (d) onMark(d); });
   es.addEventListener('protocol', (ev) => { const d = parse(ev); if (d) onProtocol(d); });
   es.addEventListener('astra', (ev) => { const d = parse(ev); if (d) astra.onEvent(d); });
+  es.addEventListener('autocal', (ev) => { const d = parse(ev); if (d) autocal.onEvent(d); });
+  es.addEventListener('labels', (ev) => { const d = parse(ev); if (d) onLabels(d); });
   es.addEventListener('error', () => {
     store.connected = false;
     navBar.setChip('chipConn', 'disconnected · retry in ' + Math.round(backoff / 1000) + ' s', 'chip-bad');
@@ -1853,6 +1961,7 @@ function boot() {
   ratingDialog.init();
   experiment.init();
   astra.init();
+  autocal.init();
   buildLegends();
   redrawAnalysisWidgets();
   widgets.flow.draw();

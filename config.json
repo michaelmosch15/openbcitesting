@@ -28,6 +28,9 @@
     "bioproxal_tools_dir": null
   },
   "labels_8_frontal": ["Fp1", "Fp2", "AF3", "AF4", "F3", "F4", "F7", "F8"],
+  "autocal": {
+    "slots": ["Fp1", "Fp2", "AF7", "AF8", "F7", "F3", "F4", "F8"]
+  },
   "flow_index": {
     "theta": 1.0,
     "alpha": 0.0,

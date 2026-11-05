@@ -186,6 +186,19 @@ canvas { display: block; width: 100%; }
 .rt-note { width: 100%; height: 26px; border: 1px solid var(--border); border-radius: 3px; padding: 0 6px; margin-top: 8px; }
 .rt-foot { display: flex; justify-content: space-between; align-items: center; padding-top: 8px; }
 
+/* ---------- placement auto-calibration ---------- */
+.autocal-box { width: min(760px, 94vw); }
+.ac-steps { display: grid; grid-template-columns: repeat(4, 1fr); gap: 6px; margin: 6px 0; }
+.ac-step { border: 1px solid var(--border); border-radius: 4px; padding: 6px 8px; background: #FAFAFA; display: flex; flex-direction: column; gap: 2px; font-size: 11px; opacity: .7; }
+.ac-step b { font-size: 12px; } .ac-step em { color: var(--ink2); font-style: normal; }
+.ac-step.cur { opacity: 1; outline: 2px solid var(--btn); background: #F4F8FD; }
+.ac-step.done { opacity: .5; }
+.ac-live { display: flex; align-items: center; justify-content: space-between; gap: 12px; min-height: 56px; }
+.ac-prompt { font-size: 18px; font-weight: 600; }
+.ac-prompt.left::before { content: "◀ "; } .ac-prompt.right::after { content: " ▶"; }
+#acTable td.conf-hi { color: var(--good); font-weight: 600; } #acTable td.conf-lo { color: var(--bad); font-weight: 600; }
+#acTable td.changed { font-weight: 600; }
+
 /* ---------- head plot ---------- */
 .head-body { align-items: center; }
 #headSvgWrap { width: 100%; max-width: 420px; }

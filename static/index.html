@@ -113,9 +113,12 @@
   <!-- 4. HEAD PLOT -->
   <section class="widget" id="wHead">
     <div class="widget-head"><span>Head plot</span>
-      <label class="head-right head-ctl">relative
+      <span class="head-right head-ctl">
+        <button id="btnAutocal" class="btn btn-mini" title="find which channel sits at which forehead site from blinks, eye movements, a jaw clench and the rest correlation">auto-calibrate placement</button>
+        <label>relative
         <select id="selHeadBand"><option value="delta">delta</option><option value="theta">theta</option><option value="alpha" selected>alpha</option><option value="beta">beta</option><option value="gamma">gamma</option></select>
-      </label></div>
+        </label>
+      </span></div>
     <div class="widget-body head-body">
       <div id="headSvgWrap"></div>
       <div class="head-legend"><span id="headMin" class="muted">0</span><div class="ramp"></div><span id="headMax" class="muted">1</span></div>
@@ -286,6 +289,34 @@
   <div class="modal-box">
     <div class="modal-head"><span id="modalTitle">Report</span><button id="modalClose" class="btn btn-mini">close</button></div>
     <div id="modalBody" class="modal-body md"></div>
+  </div>
+</div>
+
+<!-- placement auto-calibration modal; driven by app.js `autocal` -->
+<div id="autocalModal" class="modal" hidden>
+  <div class="modal-box autocal-box">
+    <div class="modal-head"><span>Auto-calibrate electrode placement</span><button id="autocalClose" class="btn btn-mini">close</button></div>
+    <div class="modal-body">
+      <p class="rt-intro muted">Headset on, ear clips on, all channels good. Four short steps, about 75 s. The signals during each step (blink size, left/right eye movements, jaw muscle, how neighbouring channels co-vary) are matched against a template of frontal 10-10 sites built from public PhysioNet EEG (8 subjects, 138 blinks, 76 eye movements) to work out which channel is where.</p>
+      <div class="ac-steps">
+        <div class="ac-step" data-phase="rest"><b>1. Rest</b><span>eyes open, still, look at the dot</span><em>30 s</em></div>
+        <div class="ac-step" data-phase="blink"><b>2. Blink</b><span>blink firmly once every 2 s</span><em>16 s</em></div>
+        <div class="ac-step" data-phase="look"><b>3. Look</b><span>eyes far LEFT, then far RIGHT, every 1.5 s, head still</span><em>16 s</em></div>
+        <div class="ac-step" data-phase="clench"><b>4. Clench</b><span>clench the jaw firmly</span><em>6 s</em></div>
+      </div>
+      <div class="ac-live"><div id="acPrompt" class="ac-prompt">Press START when ready.</div><div id="acCountdown" class="exp-countdown">--</div></div>
+      <div class="ac-result" id="acResult" hidden>
+        <table id="acTable"><thead><tr><th>ch</th><th>now</th><th>proposed</th><th>confidence</th><th>blink</th><th>heog</th><th>emg</th></tr></thead><tbody></tbody></table>
+        <div id="acSummary" class="muted"></div>
+      </div>
+      <div class="rt-foot">
+        <label class="fix-chk"><input type="checkbox" id="acSimChk"> simulated run (known hidden placement, for --sim)</label>
+        <span>
+          <button id="acStart" class="btn btn-blue">START</button>
+          <button id="acApply" class="btn btn-blue" hidden>Apply labels</button>
+        </span>
+      </div>
+    </div>
   </div>
 </div>
 

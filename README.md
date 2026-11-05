@@ -51,8 +51,15 @@ electrodes to **Fz F3 F4 Cz C3 C4 P3 P4** and start with `--montage flow` (the l
 engagement covariates at Cz/C3/C4/P3/P4. With a 16-channel Daisy the frontal set is
 F7 F8 F3 F4. The headset as built on 2026-11-05 has all eight combs in two rows across the
 forehead band: start with `--montage frontal` (`labels_8_frontal`: Fp1 Fp2 AF3 AF4 F3 F4 F7
-F8); every channel then counts as frontal for the index, and the exact channel-to-position
-order is confirmed by tapping each comb while watching the time series. The montage is
+F8); every channel then counts as frontal for the index. The exact channel-to-position order
+can be found by the headset itself: **auto-calibrate placement** in the head-plot widget runs
+a 75-s guided capture (rest, blinks, left/right eye movements, a jaw clench) and matches blink
+size, eye-movement polarity, muscle noise and the channel correlation structure against a
+template of frontal 10-10 sites built from public PhysioNet EEG
+(`tools/build_autocal_template.py` -> `autocal_template.json`). The proposal shows a
+confidence per channel; *Apply labels* relabels everything live and writes a mark. Give the
+helmet's real slots in `config.json` `autocal.slots` (neighbouring sites such as Fp2 / Fpz
+cannot be told apart from the signal). The montage is
 recorded in `session.json` and in the protocol header; it is part of the pre-registration.
 Details: `docs/EEG_FLOW_INDEX.md` section 5.
 

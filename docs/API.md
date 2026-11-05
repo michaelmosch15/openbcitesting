@@ -194,6 +194,38 @@ and `ratings` inside `marks.csv` (kind `rating`, value = JSON). `report.py` scor
 flow_raw, base_hr, phase, uptime_s, flow_open5, flow_end5`, blank when the source has none)
 and `band_console.log` holds every USB console line as `<t_host> <line>`.
 
+## Auto-calibration of electrode placement (v0.3, `autocal.py`)
+
+Recovers which channel sits at which forehead site from a 75-s guided run matched against
+`autocal_template.json` (built by `tools/build_autocal_template.py` from the public PhysioNet
+EEGMMIDB baseline runs: inter-site correlation, blink amplitude ratio and signed horizontal
+eye-movement ratio for 17 frontal 10-10 sites, ear-referenced). The browser paces the phases.
+
+| action | fields | effect |
+|---|---|---|
+| `autocal_start` | - | start capturing; `{"autocal": {"phase": null, "seconds": {...}, "since_s"}}` |
+| `autocal_phase` | `phase` one of `rest`, `blink`, `look`, `clench`, or `null` | tag the raw EEG from now on with that phase (each capped at 180 s) |
+| `autocal_solve` | `slots` (optional list of candidate sites; default `config.json` `autocal.slots`, else all 17) | compute features and solve; broadcast `event: autocal` and return the same object |
+| `autocal_stop` | - | drop the capture |
+| `autocal_sim` | `truth` (optional list), `seed` | replace the capture with synthetic signals of a known placement (for `--sim` and demos) |
+| `set_labels` | `labels` (n_ch distinct strings), `note` | relabel the channels live: index site sets, recorder header for the next session, head plot; writes a `note` mark `labels ...` and broadcasts `event: labels` |
+
+`event: autocal` / the solve result:
+```json
+{"labels": ["AF7","Fp1","Fp2","AF8","F7","F3","F4","F8"], "confidence": [1.0, 0.67, ...],
+ "cost": 0.058, "margin": 0.31, "heog_sign": -1.0,
+ "runner_ups": [{"labels": [...], "cost": 0.062}], "n_candidates": 8,
+ "template": "PhysioNet EEG Motor Movement/Imagery Dataset ...",
+ "features": {"blink": [...], "heog": [...], "emg": [...], "n_blink": 9, "heog_var": 0.83, "notes": []},
+ "capture": {"phase": null, "seconds": {"rest": 30.0, "blink": 16.0, "look": 16.0, "clench": 6.0}},
+ "current_labels": [...]}
+```
+`confidence` = share of near-optimal solutions that place the channel the same way; `margin`
+= relative cost gap to the runner-up. Adjacent 10-10 sites (Fp2 / Fpz, F3 / F1) are 2-3 cm
+apart and not separable from the signal: give the helmet's real slots in `autocal.slots`.
+`event: labels` = `{"labels": [...], "positions": {...}}`; `status.labels` carries the current
+labels every second. Nothing in the index, thresholds or protocol changes; only the labels.
+
 ## Astra (v0.3)
 
 Two panels backed by the owner's OpenAI reviewer model (`astra.py`, model `gpt-6-astra`, key

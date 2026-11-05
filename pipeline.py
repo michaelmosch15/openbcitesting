@@ -20,7 +20,9 @@ LABELS_16 = LABELS_8 + ["F7", "F8", "F3", "F4", "T7", "T8", "P3", "P4"]
 CHANNEL_COLORS = ["#818181", "#7C4B8D", "#36579E", "#317159", "#DDB20D", "#FD5E34", "#E0382D", "#A25231"]
 # 10-20 positions on the unit circle (x right, y up), for the head plot
 POSITIONS = {
-    "Fp1": (-0.31, 0.95), "Fp2": (0.31, 0.95), "F7": (-0.81, 0.59), "F8": (0.81, 0.59),
+    "Fp1": (-0.31, 0.95), "Fpz": (0.0, 1.0), "Fp2": (0.31, 0.95), "F7": (-0.81, 0.59), "F8": (0.81, 0.59),
+    "AF7": (-0.59, 0.81), "AF3": (-0.33, 0.81), "AFz": (0.0, 0.81), "AF4": (0.33, 0.81), "AF8": (0.59, 0.81),
+    "F5": (-0.68, 0.58), "F1": (-0.26, 0.56), "F2": (0.26, 0.56), "F6": (0.68, 0.58),
     "F3": (-0.50, 0.55), "F4": (0.50, 0.55), "Fz": (0.0, 0.55), "C3": (-0.55, 0.0), "C4": (0.55, 0.0),
     "Cz": (0.0, 0.0), "T7": (-1.0, 0.0), "T8": (1.0, 0.0), "P3": (-0.50, -0.55), "P4": (0.50, -0.55),
     "Pz": (0.0, -0.55), "P7": (-0.81, -0.59), "P8": (0.81, -0.59), "O1": (-0.31, -0.95), "O2": (0.31, -0.95),
@@ -117,6 +119,7 @@ class Pipeline:
         self.pair_window_s = 60.0
         self.latest_band = None
         self.last_raw_peak = None     # |uV| max per channel of the last chunk (setup helper)
+        self.autocal = None           # autocal.Capture while a placement calibration runs
         self.stats = self._empty_stats()
         board.buffer.listeners.append(self._on_samples)
 
@@ -133,6 +136,20 @@ class Pipeline:
     def set_flow_weights(self, theta: float, alpha: float, beta: float) -> None:
         self.flow_weights = {"theta": float(theta), "alpha": float(alpha), "beta": float(beta)}
         self.flow.w_theta, self.flow.w_alpha, self.flow.w_beta = float(theta), float(alpha), float(beta)
+
+    def set_labels(self, labels: list[str]) -> list[str]:
+        """Relabel the channels live (auto-calibration or a manual fix): the index's site
+        sets, the recorder's header for the NEXT session, the head plot. Returns the labels."""
+        labels = [str(x)[:8] for x in labels]
+        if len(labels) != self.n_ch:
+            raise ValueError(f"{len(labels)} labels for {self.n_ch} channels")
+        if len(set(labels)) != len(labels):
+            raise ValueError("labels must be distinct")
+        self.labels = list(labels)
+        self.flow.labels = self.labels
+        if self.recorder is not None:
+            self.recorder.labels = self.labels
+        return self.labels
 
     def set_band_source(self, source: str) -> None:
         self.band_source = source
@@ -152,6 +169,9 @@ class Pipeline:
                 self._since_epoch = 0
         if self.recorder is not None:
             self.recorder.eeg(eeg, accel, t, count0)
+        cap = self.autocal
+        if cap is not None:
+            cap.push(eeg)
         if due:
             try:
                 self._epoch()
