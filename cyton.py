@@ -39,6 +39,20 @@ FULL_SCALE_UV = (2 ** 23 - 1) * UV_PER_COUNT      # ~187 500 uV
 PACKET = 33
 
 
+def printable(text: str) -> str:
+    """Only printable ASCII (and newlines): stray packet bytes in the banner never reach the log."""
+    return "".join(c for c in text if c == "\n" or 32 <= ord(c) < 127)
+
+
+def banner_lines(text: str) -> list[str]:
+    """The banner's text lines, starting at "OpenBCI" (anything before it is leftover stream)."""
+    t = printable(text)
+    i = t.find("OpenBCI")
+    if i > 0:
+        t = t[i:]
+    return [ln.strip() for ln in t.splitlines() if ln.strip()]
+
+
 class SampleBuffer:
     """Thread-safe ring of the newest `seconds` of samples, [n, n_ch] float32 uV."""
 
@@ -173,11 +187,26 @@ class CytonBoard:
         self.ser.write(b)
         self.ser.flush()
         time.sleep(wait)
-        return self.ser.read(self.ser.in_waiting or 0).decode("ascii", "replace")
+        return printable(self.ser.read(self.ser.in_waiting or 0).decode("ascii", "replace"))
+
+    def _drain_quiet(self, quiet_s: float = 0.5, max_s: float = 5.0) -> int:
+        """Read and discard until the port has been silent for `quiet_s` (a board that was still
+        streaming keeps sending binary packets for a moment after 's'). Returns bytes dropped."""
+        n, last = 0, time.monotonic()
+        deadline = last + max_s
+        while time.monotonic() < deadline:
+            b = self.ser.read(256)
+            if b:
+                n += len(b)
+                last = time.monotonic()
+            elif time.monotonic() - last >= quiet_s:
+                break
+        return n
 
     def _soft_reset(self) -> str:
         self.ser.write(b"s")
-        time.sleep(0.3)
+        self.ser.flush()
+        self._drain_quiet()
         self.ser.reset_input_buffer()
         self.ser.write(b"v")
         self.ser.flush()
@@ -188,9 +217,9 @@ class CytonBoard:
         text = out.decode("ascii", "replace")
         if "$$$" not in text:
             raise RuntimeError(f"no '$$$' banner from the board on {self.port} - is the board "
-                               f"switched to PC and the dongle paired? got: {text!r}")
-        for line in text.strip().splitlines():
-            self.log("[cyton] " + line.strip())
+                               f"switched to PC and the dongle paired? got: {printable(text)[-200:]!r}")
+        for line in banner_lines(text):
+            self.log("[cyton] " + line)
         return text
 
     def start(self) -> None:

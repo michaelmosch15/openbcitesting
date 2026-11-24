@@ -24,6 +24,19 @@ from pathlib import Path
 HERE = Path(__file__).parent
 sys.path.insert(0, str(HERE))
 
+
+def _safe_console() -> None:
+    """A cp1252 Windows console cannot print every character a device or log line may carry; replace
+    them instead of crashing (no PYTHONIOENCODING=utf-8 needed)."""
+    for stream in (sys.stdout, sys.stderr):
+        try:
+            stream.reconfigure(errors="replace")
+        except (AttributeError, ValueError):
+            pass
+
+
+_safe_console()
+
 from cyton import CytonBoard, SimBoard, find_dongle, list_candidate_ports  # noqa: E402
 from pipeline import Pipeline  # noqa: E402
 from recorder import Recorder  # noqa: E402

@@ -309,5 +309,52 @@ class TestReconnect(unittest.TestCase):
         self.assertIsNone(b.buffer.push_meta)               # only set while the listeners run
 
 
+class StartupSerial:
+    """After 's' a still-streaming board keeps sending packets for a while, then goes quiet; 'v'
+    returns a banner with leftover binary in front of it."""
+
+    def __init__(self, junk_reads=3):
+        self.junk = junk_reads
+        self.out = []
+        self.mode = None
+
+    def write(self, b):
+        if b == b"s":
+            self.mode = "s"
+        elif b == b"v":
+            self.mode = "v"
+            self.out = [b"\xa0\x01\xc0\xff garbage OpenBCI V3 8-16 channel\nOn Board ADS1299 Device ID: 0x3E\n", b"Firmware: v3.1.2\n$$$"]
+
+    def flush(self):
+        pass
+
+    def reset_input_buffer(self):
+        pass
+
+    def read(self, n=1):
+        if self.mode == "s" and self.junk:
+            self.junk -= 1
+            return bytes([0xA0]) + bytes(range(32))
+        if self.mode == "v" and self.out:
+            return self.out.pop(0)
+        return b""
+
+
+class TestStartup(unittest.TestCase):
+    def test_banner_after_draining_the_old_stream(self):
+        b = CytonBoard.__new__(CytonBoard)
+        b.ser, b.port, b.logs = StartupSerial(), "COM_T", []
+        b.log = b.logs.append
+        text = b._soft_reset()
+        self.assertIn("$$$", text)
+        self.assertEqual(b.ser.junk, 0)                     # everything sent after 's' was read away
+        self.assertTrue(b.logs[0].startswith("[cyton] OpenBCI V3"))
+        self.assertTrue(all(all(32 <= ord(c) < 127 for c in ln) for ln in b.logs))
+
+    def test_printable(self):
+        self.assertEqual(cyton.printable("a\x00\ufffdb\nc\x7f"), "ab\nc")
+        self.assertEqual(cyton.banner_lines("\ufffd\x01xxOpenBCI V3\r\n$$$"), ["OpenBCI V3", "$$$"])
+
+
 if __name__ == "__main__":
     unittest.main()
