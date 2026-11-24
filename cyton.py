@@ -52,8 +52,11 @@ class SampleBuffer:
         self.count = 0           # total samples ever written
         self.lock = threading.Lock()
         self.listeners = []      # callables(samples_uv [k,n_ch], accel [k,3], t [k], count0)
+        # (board packet index [k], raw host receive time [k]) of the samples being pushed, or None:
+        # set for the duration of the listener calls (same thread), read by the recorder path
+        self.push_meta = None
 
-    def push(self, eeg: np.ndarray, accel: np.ndarray, t: np.ndarray) -> None:
+    def push(self, eeg: np.ndarray, accel: np.ndarray, t: np.ndarray, pkt=None, rx=None) -> None:
         k = len(eeg)
         with self.lock:
             idx = (self.pos + np.arange(k)) % self.size
@@ -63,11 +66,15 @@ class SampleBuffer:
             self.pos = (self.pos + k) % self.size
             count0 = self.count
             self.count += k
-        for fn in list(self.listeners):
-            try:
-                fn(eeg, accel, t, count0)
-            except Exception as e:  # noqa: BLE001
-                print(f"[buffer] listener error: {e!r}")
+        self.push_meta = (np.asarray(pkt), np.asarray(rx)) if pkt is not None and rx is not None else None
+        try:
+            for fn in list(self.listeners):
+                try:
+                    fn(eeg, accel, t, count0)
+                except Exception as e:  # noqa: BLE001
+                    print(f"[buffer] listener error: {e!r}")
+        finally:
+            self.push_meta = None
 
     def last(self, n: int) -> tuple[np.ndarray, np.ndarray]:
         """(samples [m, n_ch], t [m]) oldest-first, m = min(n, available)."""
@@ -124,6 +131,9 @@ class CytonBoard:
         self.port = port
         self.log = log
         self.reconnects = 0
+        self.stalls = 0
+        self.on_event = None                 # callable(kind, detail): reconnect / stall events for the recording
+        self.reopen_delay_s = 1.0
         self.want_16 = want_16
         self.daisy_even_is_upper = daisy_even_is_upper
         self.ser = serial.Serial()
@@ -212,6 +222,14 @@ class CytonBoard:
         except Exception:  # noqa: BLE001
             pass
 
+    def _event(self, kind: str, detail: str = "") -> None:
+        fn = getattr(self, "on_event", None)
+        if fn is not None:
+            try:
+                fn(kind, detail)
+            except Exception:  # noqa: BLE001
+                pass
+
     def _reopen(self) -> None:
         """Close and reopen the dongle port until it works (or stop is requested), then restart streaming."""
         while not self._stop.is_set():
@@ -219,13 +237,14 @@ class CytonBoard:
                 self.ser.close()
             except Exception:  # noqa: BLE001
                 pass
-            time.sleep(1.0)
+            time.sleep(getattr(self, "reopen_delay_s", 1.0))
             try:
                 self.ser.open()
                 self.ser.reset_input_buffer()
                 self.ser.write(b"b")
                 self.ser.flush()
                 self.log(f"[cyton] {self.port} reopened, streaming again (reconnect #{self.reconnects})")
+                self._event("reopened", f"reconnect #{self.reconnects}")
                 return
             except (serial.SerialException, OSError) as e:
                 self.log(f"[cyton] reopen failed: {e!r}")
@@ -246,6 +265,7 @@ class CytonBoard:
                 # while the dongle stays enumerated: reopen and restart the stream, never die
                 self.log(f"[cyton] serial error: {e!r} - reconnecting")
                 self.reconnects += 1
+                self._event("reconnect", f"#{self.reconnects}: {e!r}")
                 self._reopen()
                 buf.clear(); last_idx = None; pending_half = None; t_est = None
                 last_rx = time.time()
@@ -253,6 +273,8 @@ class CytonBoard:
             if not chunk:
                 if time.time() - last_rx > 5.0:          # stalled but no error: kick the stream
                     self.log("[cyton] no packets for 5 s - re-sending start")
+                    self.stalls = getattr(self, "stalls", 0) + 1
+                    self._event("stall", "no packets for 5 s, start re-sent")
                     try:
                         self.ser.reset_input_buffer(); self.ser.write(b"b"); self.ser.flush()
                     except (serial.SerialException, OSError):
@@ -296,17 +318,17 @@ class CytonBoard:
                         pending_half = None
                         lower, high = (other, eeg) if upper else (eeg, other)
                         sample = np.concatenate([lower, high])[None, :]
-                        self.buffer.push(sample, acc[None, :], np.array([t_est]))
+                        self.buffer.push(sample, acc[None, :], np.array([t_est]), pkt=[idx], rx=[now])
                     else:
                         pending_half = (upper, eeg)
                 else:
-                    self.buffer.push(eeg[None, :], acc[None, :], np.array([t_est]))
+                    self.buffer.push(eeg[None, :], acc[None, :], np.array([t_est]), pkt=[idx], rx=[now])
 
     def status(self) -> dict:
         age = time.time() - self.last_packet_t if self.last_packet_t else None
         return {"kind": "cyton", "port": self.port, "n_ch": self.n_ch, "fs": self.fs,
                 "daisy": self.daisy, "streaming": self.streaming, "packets": self.packets, "reconnects": self.reconnects,
-                "dropped": self.dropped, "last_packet_age_s": age}
+                "stalls": getattr(self, "stalls", 0), "dropped": self.dropped, "last_packet_age_s": age}
 
 
 class SimBoard:

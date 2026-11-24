@@ -250,6 +250,16 @@ def main(argv=None) -> int:
 
     bands = BandManager(cfg, on_sample=lambda s: app.on_band(s), sim_board=board if args.sim else None,
                         on_line=lambda t, line: recorder.console(t, line))
+    # reconnects / stalls of the dongle go into the recording (events.csv); session.json gets the
+    # end-of-session board and band state when the recording stops
+    if hasattr(board, "on_event"):
+        board.on_event = lambda kind, detail: recorder.event("board", kind, detail)
+
+    def stop_meta() -> dict:
+        b = bands.status()
+        return {"board": board.status(),
+                "band": {k: b.get(k) for k in ("source", "connected", "unit", "mac", "port", "build", "fw", "battery_mv", "error")}}
+    recorder.stop_meta_fn = stop_meta
     from protocol import ProtocolRunner, load_protocols
     runner = ProtocolRunner(load_protocols(HERE / "protocols.json"),
                             on_event=lambda e: app.on_protocol_event(e),

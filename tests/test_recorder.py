@@ -54,7 +54,9 @@ class TestRecorder(unittest.TestCase):
             samples = np.arange(24, dtype=np.float32).reshape(3, 8)
             accel = np.tile(np.array([0.0, 0.0, 1.0], np.float32), (3, 1))
             rec.eeg(samples, accel, t0 + np.arange(3) / 250.0, 100)
-            rec.eeg(samples * 2, accel, t0 + np.arange(3, 6) / 250.0, 103)
+            rec.eeg(samples * 2, accel, t0 + np.arange(3, 6) / 250.0, 103, pkt=[7, 8, 10], rx=t0 + np.array([0.02, 0.02, 0.05]))
+            rec.event("board", "reconnect", "#1: SerialException('gone')")
+            rec.stop_meta_fn = lambda: {"board": {"dropped": 1, "reconnects": 1}, "band": {"unit": "band 4D:0C", "mac": "68:EE:8F:49:4D:0C"}}
             rec.epoch(epoch_rec(t0 + 2, 0.61))
             rec.epoch(epoch_rec(t0 + 4, 0.63))
             rec.band({"t": t0 + 1, "flow": 0.58, "hr": 71.5, "anom": 0.12, "held": False,
@@ -68,22 +70,28 @@ class TestRecorder(unittest.TestCase):
             out = rec.stop()
             self.assertEqual(out, sdir)
             self.assertFalse(rec.active)
-            self.assertEqual(rec.counts, {"eeg": 6, "epochs": 2, "band": 2, "marks": 3, "trials": 0})
+            self.assertEqual(rec.counts, {"eeg": 6, "epochs": 2, "band": 2, "marks": 3, "trials": 0, "events": 1})
             st = rec.status()
             self.assertEqual(st["counts"]["eeg"], 6)
             self.assertIsNone(st["since_s"])
             self.assertEqual(st["dir"], str(sdir))
 
-            for name in ("eeg_raw.csv", "epochs.csv", "band.csv", "marks.csv", "task.csv", "session.json"):
+            for name in ("eeg_raw.csv", "epochs.csv", "band.csv", "marks.csv", "task.csv", "events.csv", "session.json"):
                 self.assertTrue((sdir / name).exists(), name)
 
             h, rows = read_csv(sdir / "eeg_raw.csv")
             self.assertEqual(h, ["t_host", "sample"] + [f"ch{i + 1}_{l}" for i, l in enumerate(LABELS)]
-                             + ["acc_x", "acc_y", "acc_z"])
+                             + ["acc_x", "acc_y", "acc_z", "pkt_idx", "t_rx"])
             self.assertEqual(len(rows), 6)
             self.assertEqual([r[1] for r in rows], ["100", "101", "102", "103", "104", "105"])
             self.assertEqual(rows[0][2:10], [f"{v:.2f}" for v in samples[0]])
-            self.assertEqual(rows[0][10:], ["0.000", "0.000", "1.000"])
+            self.assertEqual(rows[0][10:], ["0.000", "0.000", "1.000", "", ""])        # no packet info (sim / udp)
+            self.assertEqual([r[13] for r in rows[3:]], ["7", "8", "10"])             # board packet counter: 9 was dropped
+            self.assertEqual(rows[5][14], f"{t0 + 0.05:.4f}")
+
+            h, rows = read_csv(sdir / "events.csv")
+            self.assertEqual(h, ["t", "source", "event", "detail"])
+            self.assertEqual(rows[0][1:], ["board", "reconnect", "#1: SerialException('gone')"])
 
             h, rows = read_csv(sdir / "epochs.csv")
             self.assertEqual(h, list(epoch_rec(0, 0).keys()))
@@ -118,6 +126,10 @@ class TestRecorder(unittest.TestCase):
             self.assertEqual(meta["board"], {"kind": "sim", "fs": 250})
             self.assertEqual(meta["fs"], 250)
             self.assertEqual(meta["started"], sdir.name[:19])
+            self.assertRegex(meta["stopped"], r"^\d{4}-\d{2}-\d{2}_\d{2}-\d{2}-\d{2}$")
+            self.assertEqual(meta["at_stop"]["board"], {"dropped": 1, "reconnects": 1})
+            self.assertEqual(meta["at_stop"]["band"]["mac"], "68:EE:8F:49:4D:0C")
+            self.assertEqual(meta["at_stop"]["counts"]["eeg"], 6)
 
             # producers after stop are ignored and nothing is written
             rec.mark("note", "late")
@@ -184,6 +196,32 @@ class TestRecorder(unittest.TestCase):
             self.assertEqual((r["flags_raw"], r["no_reading_flag"], r["hrv_ok"], r["mode"], r["battery_mv"]), ("128", "1", "0", "LOW", "3900"))
             self.assertEqual(r["no_reading"], "band settling after put-on (no reading yet)")
             self.assertEqual((r["window"], r["quality"], r["ir_dc"], r["led"], r["settling"]), ("unavailable", "7", "8000", "60", "1"))
+
+    def test_pipeline_passes_packet_index_to_the_recorder(self):
+        from cyton import SampleBuffer
+        from pipeline import Pipeline
+
+        class Board:
+            n_ch, fs = 8, 250.0
+            buffer = SampleBuffer(8, 250.0, 10.0)
+
+        got = []
+
+        class Rec:
+            labels = []
+
+            def eeg(self, *a, **k):
+                got.append(k)
+
+            def epoch(self, rec):
+                pass
+
+        Pipeline(Board(), {}, recorder=Rec(), log=lambda *_: None)
+        Board.buffer.push(np.zeros((1, 8), np.float32), np.zeros((1, 3), np.float32), np.array([1.0]), pkt=[42], rx=[2.5])
+        Board.buffer.push(np.zeros((1, 8), np.float32), np.zeros((1, 3), np.float32), np.array([1.1]))
+        self.assertEqual(int(got[0]["pkt"][0]), 42)
+        self.assertEqual(float(got[0]["rx"][0]), 2.5)
+        self.assertEqual(got[1], {})
 
     def test_no_epochs_means_no_epochs_csv(self):
         with tempfile.TemporaryDirectory() as d:

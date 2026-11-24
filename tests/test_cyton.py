@@ -217,5 +217,97 @@ class TestReader(unittest.TestCase):
         np.testing.assert_allclose(d[0, 8:], UV_PER_COUNT, rtol=1e-5)
 
 
+class FlakySerial:
+    """A dongle whose handle Windows revokes mid-stream: hands out `before`, then read() raises
+    SerialException (as pyserial does for "ClearCommError ... Access is denied"); after a close()
+    + open() it hands out `after`, then stops the board. Records the bytes written per open."""
+
+    def __init__(self, before, after, stop_event, fail_opens=0):
+        self.before, self.after = list(before), list(after)
+        self.stop = stop_event
+        self.is_open = True
+        self.opens = 0
+        self.fail_opens = fail_opens
+        self.raised = False
+        self.written = [b""]
+
+    def read(self, n=1):
+        if not self.is_open:
+            raise cyton.serial.SerialException("port is closed")
+        if self.before:
+            return self.before.pop(0)
+        if not self.raised:
+            self.raised = True
+            raise cyton.serial.SerialException("ClearCommError failed (PermissionError(13, 'Access is denied.'))")
+        if self.after:
+            return self.after.pop(0)
+        self.stop.set()
+        return b""
+
+    def close(self):
+        self.is_open = False
+
+    def open(self):
+        self.opens += 1
+        if self.opens <= self.fail_opens:
+            raise cyton.serial.SerialException("could not open port")
+        self.is_open = True
+        self.written.append(b"")
+
+    def reset_input_buffer(self):
+        pass
+
+    def write(self, b):
+        self.written[-1] += b
+
+    def flush(self):
+        pass
+
+
+class TestReconnect(unittest.TestCase):
+    def _board(self, before, after, fail_opens=0):
+        b = make_board([])
+        b.ser = FlakySerial(before, after, b._stop, fail_opens)
+        b.reconnects, b.stalls, b.reopen_delay_s = 0, 0, 0.0
+        b.port = "COM_TEST"
+        b.logs, b.events = [], []
+        b.log = b.logs.append
+        b.on_event = lambda kind, detail: b.events.append((kind, detail))
+        return b
+
+    def test_serial_error_mid_stream_reopens_and_streams_again(self):
+        z = [0] * 8
+        b = self._board([make_packet(1, z) + make_packet(2, z)], [make_packet(50, [5] * 8) + make_packet(51, [6] * 8)])
+        b._reader()                                         # returns once the fake has nothing left
+        self.assertEqual(b.reconnects, 1)
+        self.assertEqual(b.ser.opens, 1)
+        self.assertEqual(b.ser.written[-1], b"b")           # streaming restarted on the reopened port
+        self.assertEqual(b.packets, 4)
+        self.assertEqual(b.buffer.count, 4)
+        self.assertEqual(b.dropped, 0)                      # the index restarts after a reconnect: not a drop
+        d, _ = b.buffer.last(1)
+        np.testing.assert_allclose(d[0], 6 * UV_PER_COUNT, rtol=1e-5)
+        self.assertEqual([k for k, _ in b.events], ["reconnect", "reopened"])
+        self.assertIn("Access is denied", b.events[0][1])
+        self.assertTrue(any("reconnecting" in line for line in b.logs))
+
+    def test_reopen_retries_until_the_port_is_back(self):
+        b = self._board([], [make_packet(1, [1] * 8)], fail_opens=2)
+        b._reader()
+        self.assertEqual(b.ser.opens, 3)
+        self.assertEqual(b.reconnects, 1)
+        self.assertEqual(b.packets, 1)
+        self.assertEqual(sum("reopen failed" in line for line in b.logs), 2)
+
+    def test_packet_index_and_receive_time_reach_the_listeners(self):
+        seen = []
+        b = make_board([make_packet(5, [0] * 8) + make_packet(7, [0] * 8)])
+        b.buffer.listeners.append(lambda e, a, t, c0: seen.append(b.buffer.push_meta))
+        b._reader()
+        self.assertEqual([int(m[0][0]) for m in seen], [5, 7])
+        self.assertTrue(all(m[1][0] > 1e9 for m in seen))
+        self.assertIsNone(b.buffer.push_meta)               # only set while the listeners run
+
+
 if __name__ == "__main__":
     unittest.main()

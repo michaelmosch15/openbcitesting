@@ -211,7 +211,11 @@ class Pipeline:
             if due:
                 self._since_epoch = 0
         if self.recorder is not None:
-            self.recorder.eeg(eeg, accel, t, count0)
+            meta = getattr(self.board.buffer, "push_meta", None)      # (packet index, raw rx time) from a Cyton
+            if meta is not None:
+                self.recorder.eeg(eeg, accel, t, count0, pkt=meta[0], rx=meta[1])
+            else:
+                self.recorder.eeg(eeg, accel, t, count0)
         cap = self.autocal
         if cap is not None:
             cap.push(eeg)

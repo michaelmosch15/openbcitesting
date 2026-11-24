@@ -1,12 +1,16 @@
 """Session recording: one folder per session under sessions/, plain CSV, written from a
 queue thread so the acquisition threads never block on disk.
 
-  eeg_raw.csv   t_host, sample, ch1..chN (uV, unfiltered), acc_x, acc_y, acc_z
+  eeg_raw.csv   t_host, sample, ch1..chN (uV, unfiltered), acc_x, acc_y, acc_z, pkt_idx, t_rx
+                (t_host = smoothed board clock, sample = running count; pkt_idx = the board's own
+                0-255 packet counter and t_rx = raw host receive time, so drops and stalls show)
   epochs.csv    t, flow_eeg + components, per-band mean relative power, per-channel
                 alpha/theta/beta absolute power, n_good
   band.csv      t, flow, hr, anom, held, settling, fhi   (BioProxal [pub] lines)
   marks.csv     t, kind, value, note                      (felt-flow slider, buttons)
-  session.json  board / montage / config snapshot
+  events.csv    t, source, event, detail                  (board reconnects / stalls, band link)
+  session.json  board / montage / config snapshot; at stop also `stopped` + `at_stop`
+                (board dropped / reconnects / stalls, band unit / MAC, counts)
 """
 from __future__ import annotations
 
@@ -46,6 +50,7 @@ class Recorder:
         self.active = False
         self.started_at = None
         self.counts = {"eeg": 0, "epochs": 0, "band": 0, "marks": 0}
+        self.stop_meta_fn = None      # callable() -> dict merged into session.json["at_stop"] at stop
 
     def start(self, label: str = "") -> Path:
         if self.active:
@@ -57,13 +62,14 @@ class Recorder:
         (self.dir / "session.json").write_text(json.dumps(
             {**self.meta, "labels": self.labels, "started": stamp}, indent=2), "utf-8")
         self._open("eeg_raw", ["t_host", "sample"] + [f"ch{i + 1}_{l}" for i, l in enumerate(self.labels)]
-                   + ["acc_x", "acc_y", "acc_z"])
+                   + ["acc_x", "acc_y", "acc_z", "pkt_idx", "t_rx"])
+        self._open("events", ["t", "source", "event", "detail"])
         self._open("band", ["t", "flow", "hr", "anom", "held", "settling", "fhi", "asleep", "poor_contact"] + list(BAND_EXTRA))
         self._console = open(self.dir / "band_console.log", "a", encoding="utf-8")
         self._open("marks", ["t", "kind", "value", "note"])
         self._open("task", ["t", "block_index", "condition", "task", "level", "problem", "answer", "response", "correct", "rt_ms"])
         self._epoch_header = None
-        self.counts = {"eeg": 0, "epochs": 0, "band": 0, "marks": 0, "trials": 0}
+        self.counts = {"eeg": 0, "epochs": 0, "band": 0, "marks": 0, "trials": 0, "events": 0}
         self.active = True
         self.started_at = time.time()
         self._thread = threading.Thread(target=self._writer, name="recorder", daemon=True)
@@ -83,6 +89,7 @@ class Recorder:
         self.q.put(None)
         if self._thread:
             self._thread.join(5.0)
+        self._write_stop_meta()
         for f in list(self._files.values()) + [getattr(self, "_console", None)]:
             try:
                 if f is not None:
@@ -93,10 +100,34 @@ class Recorder:
         d, self._files, self._writers = self.dir, {}, {}
         return d
 
+    def _write_stop_meta(self) -> None:
+        """Add the stop time and the end-of-session board / band state to session.json."""
+        try:
+            p = self.dir / "session.json"
+            meta = json.loads(p.read_text("utf-8")) if p.exists() else {}
+            extra = {}
+            if self.stop_meta_fn is not None:
+                try:
+                    extra = dict(self.stop_meta_fn() or {})
+                except Exception as e:  # noqa: BLE001
+                    extra = {"error": repr(e)}
+            meta["stopped"] = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
+            meta["stopped_t"] = round(time.time(), 3)
+            meta["at_stop"] = {**extra, "counts": dict(self.counts)}
+            p.write_text(json.dumps(meta, indent=2, default=str), "utf-8")
+        except Exception as e:  # noqa: BLE001
+            print(f"[recorder] session.json at stop: {e!r}")
+
     # --- producers (any thread) ---------------------------------------------------
-    def eeg(self, samples: np.ndarray, accel: np.ndarray, t: np.ndarray, count0: int) -> None:
+    def eeg(self, samples: np.ndarray, accel: np.ndarray, t: np.ndarray, count0: int, pkt=None, rx=None) -> None:
         if self.active:
-            self.q.put(("eeg", samples.copy(), accel.copy(), t.copy(), count0))
+            self.q.put(("eeg", samples.copy(), accel.copy(), t.copy(), count0,
+                        None if pkt is None else np.array(pkt), None if rx is None else np.array(rx)))
+
+    def event(self, source: str, event: str, detail: str = "") -> None:
+        """A link event (board reconnect / stall, band connect / error) -> events.csv."""
+        if self.active:
+            self.q.put(("event", time.time(), str(source), str(event), str(detail)[:300]))
 
     def epoch(self, rec: dict) -> None:
         if self.active:
@@ -128,11 +159,13 @@ class Recorder:
             try:
                 kind = item[0]
                 if kind == "eeg":
-                    _, samples, accel, t, count0 = item
+                    _, samples, accel, t, count0, pkt, rx = item
                     w = self._writers["eeg_raw"]
+                    has_meta = pkt is not None and rx is not None and len(pkt) == len(samples) == len(rx)
                     for i in range(len(samples)):
                         w.writerow([f"{t[i]:.4f}", count0 + i] + [f"{v:.2f}" for v in samples[i]]
-                                   + [f"{v:.3f}" for v in accel[i]])
+                                   + [f"{v:.3f}" for v in accel[i]]
+                                   + ([int(pkt[i]), f"{rx[i]:.4f}"] if has_meta else ["", ""]))
                     self.counts["eeg"] += len(samples)
                 elif kind == "epoch":
                     rec = item[1]
@@ -149,6 +182,10 @@ class Recorder:
                                                     int(bool(s.get("asleep"))), int(bool(s.get("poor_contact")))]
                                                    + [_cell(s.get(k)) for k in BAND_EXTRA])
                     self.counts["band"] += 1
+                elif kind == "event":
+                    _, t, source, ev, detail = item
+                    self._writers["events"].writerow([f"{t:.3f}", source, ev, detail])
+                    self.counts["events"] = self.counts.get("events", 0) + 1
                 elif kind == "console":
                     _, t, line = item
                     if getattr(self, "_console", None) is not None:
