@@ -258,25 +258,31 @@ class BandLink:
 
 
 def find_tools_dir_v2(configured: str | None, start: Path = HERE) -> Path | None:
-    """The firmware_v2 tools folder (live_usb.py + its offload.py): configured, else
-    <ancestor>/firmware_v2/.claude/worktrees/*/tools or <ancestor>/firmware_v2/tools."""
+    """The firmware_v2 tools folder (live_usb.py + its offload.py), in this order:
+    1. the configured path (usb.firmware_v2_tools_dir; absolute, or relative to this project),
+    2. <ancestor>/firmware_v2/tools - the main checkout, i.e. the released tools,
+    3. only if the main checkout has none: the most recently changed
+       <ancestor>/firmware_v2/.claude/worktrees/*/tools (a work-in-progress branch; on 11-19 the old
+       reverse-alphabetical pick loaded worktrees/v3-crash/tools)."""
+    def ok(c: Path) -> bool:
+        return (c / "live_usb.py").exists() and (c / "offload.py").exists()
+
     if configured:
         p = Path(configured).expanduser()
         if not p.is_absolute():
             p = (start / p).resolve()
-        if (p / "live_usb.py").exists():
+        if ok(p):
             return p
-    for d in [start, *start.parents]:
-        fw = d / "firmware_v2"
-        if not fw.is_dir():
-            continue
-        cands = [fw / "tools"]
+    fws = [d / "firmware_v2" for d in [start, *start.parents] if (d / "firmware_v2").is_dir()]
+    for fw in fws:
+        if ok(fw / "tools"):
+            return fw / "tools"
+    for fw in fws:
         wt = fw / ".claude" / "worktrees"
         if wt.is_dir():
-            cands = [sub / "tools" for sub in sorted(wt.iterdir(), reverse=True)] + cands
-        for c in cands:
-            if (c / "live_usb.py").exists() and (c / "offload.py").exists():
-                return c
+            cands = [sub / "tools" for sub in wt.iterdir() if ok(sub / "tools")]
+            if cands:
+                return max(cands, key=lambda c: (c / "offload.py").stat().st_mtime)
     return None
 
 

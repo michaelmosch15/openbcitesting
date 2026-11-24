@@ -149,8 +149,21 @@ class TestV2Row(unittest.TestCase):
             self.assertIsNone(B.find_tools_dir_v2(None, start=proj))
             t = root / "firmware_v2" / ".claude" / "worktrees" / "v2-build" / "tools"; t.mkdir(parents=True)
             (t / "live_usb.py").write_text("#", "utf-8"); (t / "offload.py").write_text("#", "utf-8")
-            self.assertEqual(B.find_tools_dir_v2(None, start=proj), t)
+            self.assertEqual(B.find_tools_dir_v2(None, start=proj), t)     # main checkout missing: worktree fallback
             self.assertEqual(B.find_tools_dir_v2(str(t), start=proj), t)
+            # a second worktree: the most recently changed one wins, never the alphabetical last
+            import os
+            t2 = root / "firmware_v2" / ".claude" / "worktrees" / "zz-old" / "tools"; t2.mkdir(parents=True)
+            (t2 / "live_usb.py").write_text("#", "utf-8"); (t2 / "offload.py").write_text("#", "utf-8")
+            os.utime(t2 / "offload.py", (1e9, 1e9))
+            self.assertEqual(B.find_tools_dir_v2(None, start=proj), t)
+            # the main checkout's tools beat every worktree
+            m = root / "firmware_v2" / "tools"; m.mkdir()
+            (m / "live_usb.py").write_text("#", "utf-8"); (m / "offload.py").write_text("#", "utf-8")
+            self.assertEqual(B.find_tools_dir_v2(None, start=proj), m)
+            # an explicit config path beats both; a bad one falls back to main
+            self.assertEqual(B.find_tools_dir_v2(str(t2), start=proj), t2)
+            self.assertEqual(B.find_tools_dir_v2(str(root / "nope"), start=proj), m)
 
 
 class TestHandleLine(unittest.TestCase):
