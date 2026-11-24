@@ -155,6 +155,8 @@ def load_band(session_dir: Path) -> dict:
 
 def load_marks(session_dir: Path) -> list[dict]:
     _, rows = _read_csv(session_dir / "marks.csv")
+    from recorder import apply_mark_edits
+    rows = apply_mark_edits(rows)
     out = []
     for r in rows:
         t = _f(r.get("t"))

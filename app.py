@@ -205,13 +205,16 @@ def preload_today(pipeline, sessions_dir: Path, match: str = "") -> None:
                     pipeline.band_hist.append((t, smp["flow"], smp)); n_b += 1
             f = d / "marks.csv"
             if f.exists():
-                for r in csv.DictReader(f.open(encoding="utf-8", errors="replace")):
+                from recorder import apply_mark_edits
+                with f.open(encoding="utf-8", errors="replace") as fh:
+                    mrows = apply_mark_edits(list(csv.DictReader(fh)))
+                for r in mrows:
                     t = num(r.get("t"))
                     if t is None:
                         continue
                     v = num(r.get("value"))
                     pipeline.marks.append({"t": t, "kind": r.get("kind") or "", "value": v if v is not None else r.get("value"),
-                                           "note": r.get("note") or ""}); n_m += 1
+                                           "note": r.get("note") or "", "id": r.get("id") or None}); n_m += 1
         except Exception as e:  # noqa: BLE001
             log(f"[history] skipped {d.name}: {e!r}")
     log(f"[history] restored today's earlier data: {n_e} EEG index points, {n_b} band samples, {n_m} marks")

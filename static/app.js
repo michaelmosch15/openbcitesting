@@ -53,6 +53,8 @@ const FSS_ITEMS = [
   ['lost', 'I am completely lost in thought'],
 ];
 const FSS_DEMAND = [['1', 'too low'], ['2', 'just right'], ['3', 'too high']];
+// the operator's marks, which can be corrected / deleted from the mark log
+const MARK_EDITABLE = new Set(['felt_flow', 'flow_start', 'flow_end', 'distracted', 'note']);
 // mark kinds that are drawn as block shading / rating squares, or not drawn at all
 const MARK_BLOCK = new Set(['block_start', 'block_end']);
 const MARK_HIDDEN = new Set(['trial']);
@@ -1017,12 +1019,14 @@ const feltFlow = {
   init() {
     const sl = $('feltSlider');
     sl.addEventListener('input', () => { $('feltVal').textContent = parseFloat(sl.value).toFixed(2); });
-    $('btnFelt').addEventListener('click', () => cmd('mark', { kind: 'felt_flow', value: parseFloat(sl.value) }));
-    document.querySelectorAll('#wFelt button[data-mark]').forEach((b) => b.addEventListener('click', () => cmd('mark', { kind: b.dataset.mark })));
+    // client_id: the server records a retried click once (it also folds the same mark within 2 s)
+    const cid = () => Date.now().toString(36) + Math.random().toString(36).slice(2, 8);
+    $('btnFelt').addEventListener('click', () => cmd('mark', { kind: 'felt_flow', value: parseFloat(sl.value), client_id: cid() }));
+    document.querySelectorAll('#wFelt button[data-mark]').forEach((b) => b.addEventListener('click', () => cmd('mark', { kind: b.dataset.mark, client_id: cid() })));
     $('btnNote').addEventListener('click', () => {
       const txt = $('noteText').value.trim();
       if (!txt) return;
-      cmd('mark', { kind: 'note', value: txt, note: txt }).then(() => { $('noteText').value = ''; });
+      cmd('mark', { kind: 'note', value: txt, note: txt, client_id: Date.now().toString(36) }).then(() => { $('noteText').value = ''; });
     });
     $('noteText').addEventListener('keydown', (e) => { if (e.key === 'Enter') $('btnNote').click(); });
   },
@@ -1030,7 +1034,22 @@ const feltFlow = {
     if (MARK_HIDDEN.has(m.kind)) return;   // one trial every few seconds would flush the real marks out of the log
     const el = $('markLog');
     const line = document.createElement('div');
-    line.textContent = fmtClock(m.t, true) + ' · ' + m.kind + (m.value != null && m.value !== '' ? ' ' + (isNum(m.value) ? m.value.toFixed(2) : m.value) : '') + (m.note ? ' · ' + m.note : '');
+    if (m.id) line.dataset.markId = m.id;
+    const txt = document.createElement('span');
+    txt.textContent = fmtClock(m.t, true) + ' · ' + m.kind + (m.value != null && m.value !== '' ? ' ' + (isNum(m.value) ? m.value.toFixed(2) : m.value) : '') + (m.note ? ' · ' + m.note : '');
+    line.appendChild(txt);
+    if (m.id && MARK_EDITABLE.has(m.kind)) {
+      // correct a mis-set felt-flow value, or delete a mark made by mistake (the CSV keeps both rows)
+      const mkBtn = (label, title, fn) => { const b = document.createElement('button'); b.type = 'button'; b.className = 'mark-edit'; b.textContent = label; b.title = title; b.addEventListener('click', fn); line.appendChild(b); };
+      if (m.kind === 'felt_flow') mkBtn('fix', 'correct the value', () => {
+        const v = window.prompt('Correct felt flow (0-1):', isNum(m.value) ? m.value.toFixed(2) : '');
+        if (v === null) return;
+        const f = parseFloat(v);
+        if (!(f >= 0 && f <= 1)) { window.alert('felt flow must be 0..1'); return; }
+        cmd('mark_edit', { id: m.id, value: f });
+      });
+      mkBtn('×', 'delete this mark', () => { if (window.confirm('Delete this ' + m.kind + ' mark?')) cmd('mark_edit', { id: m.id, delete: true }); });
+    }
     el.prepend(line);
     while (el.children.length > 20) el.removeChild(el.lastChild);
   },
@@ -1934,8 +1953,21 @@ function onBand(d) {
 
 function onMark(d) {
   if (!d || !isNum(d.t)) return;
-  store.marks.push([d.t, d.kind, d.value != null ? d.value : (d.note || null)]);
+  store.marks.push([d.t, d.kind, d.value != null ? d.value : (d.note || null), d.id || null]);
   feltFlow.log(d);
+  widgets.flow.draw();
+}
+
+/** event: mark_edit - a mark was corrected ({...mark}) or deleted ({...mark, deleted: true}) */
+function onMarkEdit(d) {
+  if (!d || !d.id) return;
+  const i = store.marks.findIndex((m) => m[3] === d.id);
+  if (i >= 0) { if (d.deleted) store.marks.splice(i, 1); else store.marks[i][2] = d.value != null ? d.value : (d.note || null); }
+  const line = document.querySelector('#markLog [data-mark-id="' + d.id + '"]');
+  if (line) {
+    if (d.deleted) line.remove();
+    else if (line.firstChild) line.firstChild.textContent = fmtClock(d.t, true) + ' · ' + d.kind + (isNum(d.value) ? ' ' + d.value.toFixed(2) + ' (corrected)' : '') + (d.note ? ' · ' + d.note : '');
+  }
   widgets.flow.draw();
 }
 
@@ -1961,6 +1993,7 @@ function connect() {
   es.addEventListener('status', (ev) => { const d = parse(ev); if (d) onStatus(d); });
   es.addEventListener('band', (ev) => { const d = parse(ev); if (d) onBand(d); });
   es.addEventListener('mark', (ev) => { const d = parse(ev); if (d) onMark(d); });
+  es.addEventListener('mark_edit', (ev) => { const d = parse(ev); if (d) onMarkEdit(d); });
   es.addEventListener('protocol', (ev) => { const d = parse(ev); if (d) onProtocol(d); });
   es.addEventListener('astra', (ev) => { const d = parse(ev); if (d) astra.onEvent(d); });
   es.addEventListener('autocal', (ev) => { const d = parse(ev); if (d) autocal.onEvent(d); });

@@ -7,7 +7,9 @@ queue thread so the acquisition threads never block on disk.
   epochs.csv    t, flow_eeg + components, per-band mean relative power, per-channel
                 alpha/theta/beta absolute power, n_good
   band.csv      t, flow, hr, anom, held, settling, fhi   (BioProxal [pub] lines)
-  marks.csv     t, kind, value, note                      (felt-flow slider, buttons)
+  marks.csv     t, kind, value, note, id, edit_of         (felt-flow slider, buttons; append-and-close
+                per row, so a hand edit while recording is safe. A correction / deletion is a later
+                row of kind mark_edit / mark_delete with edit_of = the mark's id: apply_mark_edits)
   events.csv    t, source, event, detail                  (board reconnects / stalls, band link)
   session.json  board / montage / config snapshot; at stop also `stopped` + `at_stop`
                 (board dropped / reconnects / stalls, band unit / MAC, counts)
@@ -35,6 +37,37 @@ def _cell(v):
     if v is None:
         return ""
     return int(v) if isinstance(v, bool) else v
+
+
+def apply_mark_edits(rows: list[dict]) -> list[dict]:
+    """marks.csv rows (dicts) -> the marks as they stand after the operator's corrections:
+    mark_edit rows replace the value / note of the mark they point at, mark_delete rows remove
+    it; the edit rows themselves are dropped. Files without the id / edit_of columns pass through."""
+    edits = [r for r in rows if (r.get("kind") or "") in ("mark_edit", "mark_delete") and r.get("edit_of")]
+    if not edits:
+        return [r for r in rows if (r.get("kind") or "") not in ("mark_edit", "mark_delete")]
+    by_id = {}
+    out = []
+    for r in rows:
+        if (r.get("kind") or "") in ("mark_edit", "mark_delete"):
+            continue
+        r = dict(r)
+        out.append(r)
+        if r.get("id"):
+            by_id[r["id"]] = r
+    gone = set()
+    for e in edits:
+        tgt = by_id.get(e["edit_of"])
+        if tgt is None:
+            continue
+        if e["kind"] == "mark_delete":
+            gone.add(e["edit_of"])
+        else:
+            if (e.get("value") or "") != "":
+                tgt["value"] = e["value"]
+            if (e.get("note") or "") != "":
+                tgt["note"] = e["note"]
+    return [r for r in out if r.get("id") not in gone]
 
 
 class Recorder:
@@ -66,7 +99,10 @@ class Recorder:
         self._open("events", ["t", "source", "event", "detail"])
         self._open("band", ["t", "flow", "hr", "anom", "held", "settling", "fhi", "asleep", "poor_contact"] + list(BAND_EXTRA))
         self._console = open(self.dir / "band_console.log", "a", encoding="utf-8")
-        self._open("marks", ["t", "kind", "value", "note"])
+        # marks.csv is opened, appended and closed per row (never held open): it is the one file people
+        # hand-edit, and an editor saving it under a held handle left NUL bytes on 11-19
+        with open(self.dir / "marks.csv", "w", newline="", encoding="utf-8") as f:
+            csv.writer(f).writerow(["t", "kind", "value", "note", "id", "edit_of"])
         self._open("task", ["t", "block_index", "condition", "task", "level", "problem", "answer", "response", "correct", "rt_ms"])
         self._epoch_header = None
         self.counts = {"eeg": 0, "epochs": 0, "band": 0, "marks": 0, "trials": 0, "events": 0}
@@ -137,9 +173,11 @@ class Recorder:
         if self.active:
             self.q.put(("band", dict(s)))
 
-    def mark(self, kind: str, value, note: str = "") -> None:
+    def mark(self, kind: str, value, note: str = "", mid: str | None = None, edit_of: str | None = None,
+             t: float | None = None) -> None:
         if self.active:
-            self.q.put(("mark", {"t": time.time(), "kind": kind, "value": value, "note": note}))
+            self.q.put(("mark", {"t": time.time() if t is None else float(t), "kind": kind, "value": value, "note": note,
+                                 "id": mid or "", "edit_of": edit_of or ""}))
 
     def trial(self, rec: dict) -> None:
         if self.active:
@@ -193,7 +231,9 @@ class Recorder:
                         self.counts["console"] = self.counts.get("console", 0) + 1
                 elif kind == "mark":
                     m = item[1]
-                    self._writers["marks"].writerow([f"{m['t']:.3f}", m["kind"], m["value"], m["note"]])
+                    with open(self.dir / "marks.csv", "a", newline="", encoding="utf-8") as f:
+                        csv.writer(f).writerow([f"{m['t']:.3f}", m["kind"], m["value"], m["note"],
+                                                m.get("id", ""), m.get("edit_of", "")])
                     self.counts["marks"] += 1
                 elif kind == "trial":
                     r = item[1]

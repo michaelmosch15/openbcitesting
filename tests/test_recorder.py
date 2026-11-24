@@ -115,10 +115,10 @@ class TestRecorder(unittest.TestCase):
             self.assertTrue((sdir / "band_console.log").exists())
 
             h, rows = read_csv(sdir / "marks.csv")
-            self.assertEqual(h, ["t", "kind", "value", "note"])
+            self.assertEqual(h, ["t", "kind", "value", "note", "id", "edit_of"])
             self.assertEqual(len(rows), 3)
-            self.assertEqual(rows[0][1:], ["felt_flow", "0.7", "deep"])
-            self.assertEqual(rows[1][1:], ["note", "coffee", ""])
+            self.assertEqual(rows[0][1:], ["felt_flow", "0.7", "deep", "", ""])
+            self.assertEqual(rows[1][1:], ["note", "coffee", "", "", ""])
             self.assertTrue(re.fullmatch(r"\d+\.\d{3}", rows[0][0]))
 
             meta = json.loads((sdir / "session.json").read_text("utf-8"))
@@ -222,6 +222,40 @@ class TestRecorder(unittest.TestCase):
         self.assertEqual(int(got[0]["pkt"][0]), 42)
         self.assertEqual(float(got[0]["rx"][0]), 2.5)
         self.assertEqual(got[1], {})
+
+    def test_marks_file_is_never_held_open(self):
+        """A hand edit of marks.csv during a recording (an editor rewriting the file) must not leave
+        NUL bytes or lose the edit: every mark is appended with its own open / close."""
+        import time as _t
+        with tempfile.TemporaryDirectory() as d:
+            rec = Recorder(Path(d), LABELS, {})
+            sdir = rec.start()
+            rec.mark("felt_flow", 0.4, "", mid="a1")
+            for _ in range(100):
+                if rec.counts["marks"] == 1:
+                    break
+                _t.sleep(0.01)
+            f = sdir / "marks.csv"
+            f.write_text("t,kind,value,note,id,edit_of\n1.000,felt_flow,0.45,fixed by hand,a1,\n", "utf-8")   # shorter than before
+            rec.mark("note", "after the edit", "", mid="b2")
+            rec.stop()
+            raw = f.read_bytes()
+            self.assertNotIn(b"\x00", raw)
+            h, rows = read_csv(f)
+            self.assertEqual([r[2] for r in rows], ["0.45", "after the edit"])
+
+    def test_apply_mark_edits(self):
+        from recorder import apply_mark_edits
+        rows = [{"t": "1", "kind": "felt_flow", "value": "0.3", "note": "", "id": "a", "edit_of": ""},
+                {"t": "2", "kind": "note", "value": "oops", "note": "oops", "id": "b", "edit_of": ""},
+                {"t": "3", "kind": "felt_flow", "value": "0.8", "note": "", "id": "c", "edit_of": ""},
+                {"t": "4", "kind": "mark_edit", "value": "0.35", "note": "", "id": "", "edit_of": "a"},
+                {"t": "5", "kind": "mark_delete", "value": "", "note": "", "id": "", "edit_of": "b"},
+                {"t": "6", "kind": "mark_edit", "value": "0.9", "note": "", "id": "", "edit_of": "zz"}]
+        out = apply_mark_edits(rows)
+        self.assertEqual([(r["id"], r["value"]) for r in out], [("a", "0.35"), ("c", "0.8")])
+        old = [{"t": "1", "kind": "felt_flow", "value": "0.3", "note": ""}]        # 11-19 files: no id column
+        self.assertEqual(apply_mark_edits(old), old)
 
     def test_no_epochs_means_no_epochs_csv(self):
         with tempfile.TemporaryDirectory() as d:

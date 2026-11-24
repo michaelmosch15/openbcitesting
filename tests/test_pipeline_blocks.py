@@ -231,5 +231,57 @@ class TestRatingMark(unittest.TestCase):
         self.assertEqual(row["felt"], 0.9)
 
 
+
+class TestMarks(unittest.TestCase):
+    def test_retry_is_recorded_once(self):
+        p, _ = make_pipeline()
+        written = []
+
+        class Rec:
+            def mark(self, *a, **k):
+                written.append((a, k))
+        p.recorder = Rec()
+        m1 = p.mark("felt_flow", 0.6, client_id="x1")
+        m2 = p.mark("felt_flow", 0.6, client_id="x1")             # same click retried
+        m3 = p.mark("felt_flow", 0.6)                             # double click, no id, within 2 s
+        self.assertTrue(m2["duplicate"]); self.assertTrue(m3["duplicate"])
+        self.assertEqual(m2["id"], m1["id"])
+        self.assertEqual(len(p.marks), 1); self.assertEqual(len(written), 1)
+        p.mark("felt_flow", 0.7)                                  # a different value is a new mark
+        self.assertEqual(len(p.marks), 2)
+        p.mark("block_start", "1"); p.mark("block_start", "1")    # protocol marks are never folded
+        self.assertEqual(len(p.marks), 4)
+
+    def test_stats_error_does_not_lose_or_duplicate_the_mark(self):
+        p, _ = make_pipeline()
+        p._compute_stats = lambda: 1 / 0
+        m = p.mark("felt_flow", 0.5)
+        self.assertEqual(len(p.marks), 1)
+        self.assertTrue(p.mark("felt_flow", 0.5)["duplicate"])
+        self.assertIn("id", m)
+
+    def test_correct_and_delete(self):
+        p, _ = make_pipeline()
+        written = []
+
+        class Rec:
+            def mark(self, *a, **k):
+                written.append((a, k))
+        p.recorder = Rec()
+        m = p.mark("felt_flow", 0.2)
+        n = p.mark("note", "wrong", "wrong")
+        fixed = p.edit_mark(m["id"], value=0.25)
+        self.assertEqual(fixed["value"], 0.25); self.assertEqual(p.marks[0]["value"], 0.25)
+        gone = p.edit_mark(n["id"], delete=True)
+        self.assertTrue(gone["deleted"]); self.assertEqual(len(p.marks), 1)
+        self.assertEqual(written[-2], (("mark_edit", 0.25, ""), {"edit_of": m["id"]}))
+        self.assertEqual(written[-1], (("mark_delete", "", ""), {"edit_of": n["id"]}))
+        with self.assertRaises(ValueError):
+            p.edit_mark("nope", delete=True)
+        r = p.mark("rating", "{}")
+        with self.assertRaises(ValueError):
+            p.edit_mark(r["id"], delete=True)                     # protocol marks are not editable
+
+
 if __name__ == "__main__":
     unittest.main()

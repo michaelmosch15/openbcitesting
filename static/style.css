@@ -320,3 +320,4 @@ details[open].widget > summary > span:first-child::before { content: "▾ "; }
 .md p { margin: 4px 0; } .md ul { margin: 4px 0 4px 18px; padding: 0; } .md code { background: #F0F0F0; padding: 0 3px; }
 .md pre { background: #F4F4F4; padding: 8px; overflow: auto; font-size: 12px; }
 .md table { width: auto; margin: 6px 0; }
+.mark-log button.mark-edit { margin-left: 6px; padding: 0 5px; font-size: 10px; line-height: 14px; cursor: pointer; }

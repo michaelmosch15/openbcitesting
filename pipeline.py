@@ -514,11 +514,28 @@ class Pipeline:
         return v
 
     # --- marks ----------------------------------------------------------------
-    def mark(self, kind: str, value, note: str = "") -> dict:
-        m = {"t": time.time(), "kind": kind, "value": value, "note": note}
+    MARK_DEDUP_S = 2.0
+    EDITABLE_MARKS = ("felt_flow", "flow_start", "flow_end", "distracted", "note")
+
+    def mark(self, kind: str, value, note: str = "", client_id: str | None = None) -> dict:
+        """Record a mark once. A retry is recognised by its client id, or by the same kind + value
+        (+ note) within MARK_DEDUP_S of an earlier mark; the earlier mark comes back with
+        duplicate=True and nothing is written twice."""
+        now = time.time()
+        # only the operator's marks are de-duplicated; protocol / trial marks come once from the runner
+        for old in (reversed(self.marks[-50:]) if kind in self.EDITABLE_MARKS else ()):
+            if client_id and old.get("client_id") == client_id:
+                return {**old, "duplicate": True}
+            if (now - old["t"] <= self.MARK_DEDUP_S and old["kind"] == kind and old.get("value") == value
+                    and (old.get("note") or "") == (note or "")):
+                return {**old, "duplicate": True}
+        import uuid
+        m = {"t": now, "kind": kind, "value": value, "note": note, "id": uuid.uuid4().hex[:12]}
+        if client_id:
+            m["client_id"] = str(client_id)[:64]
         self.marks.append(m)
         if self.recorder is not None:
-            self.recorder.mark(kind, value, note)
+            self.recorder.mark(kind, value, note, mid=m["id"], t=now)
         if kind == "rating":
             try:
                 import json as _json
@@ -527,8 +544,37 @@ class Pipeline:
                                      "items": {k: v for k, v in d.items() if k not in ("block", "condition")}})
             except (ValueError, TypeError):
                 pass
-        self.stats = self._compute_stats()
+        self._refresh_stats()
         return m
+
+    def edit_mark(self, mark_id: str, value=None, note: str | None = None, delete: bool = False) -> dict:
+        """Correct (new value / note) or delete one of the operator's marks. The original row in
+        marks.csv stays; an edit row (kind mark_edit / mark_delete, edit_of = id) is appended."""
+        m = next((x for x in self.marks if x.get("id") == mark_id), None)
+        if m is None:
+            raise ValueError(f"no mark {mark_id!r}")
+        if m["kind"] not in self.EDITABLE_MARKS:
+            raise ValueError(f"{m['kind']} marks come from the protocol and cannot be edited here")
+        if delete:
+            self.marks.remove(m)
+            out = {**m, "deleted": True}
+        else:
+            if value is not None:
+                m["value"] = value
+            if note is not None:
+                m["note"] = note
+            out = dict(m)
+        if self.recorder is not None:
+            self.recorder.mark("mark_delete" if delete else "mark_edit", "" if delete or value is None else value,
+                               "" if note is None else note, edit_of=mark_id)
+        self._refresh_stats()
+        return out
+
+    def _refresh_stats(self) -> None:
+        try:
+            self.stats = self._compute_stats()
+        except Exception as e:  # noqa: BLE001
+            self.log(f"[pipeline] stats error: {e!r}")
 
     def on_protocol(self, ev: dict) -> None:
         """Keep the block table (for per-condition stats) from the runner's transitions."""
@@ -732,7 +778,7 @@ class Pipeline:
                 "eeg_raw": [[round(t, 2), v] for (t, v) in list(self.eeg_hist)],
                 "band": [[round(t, 2), fl, bool(s.get("held"))] for (t, fl, s) in list(self.band_hist)],
                 "vitals": self.vitals(),
-                "marks": [[round(m["t"], 2), m["kind"], m["value"]] for m in list(self.marks)]}
+                "marks": [[round(m["t"], 2), m["kind"], m["value"], m.get("id")] for m in list(self.marks)]}
 
     def vitals(self, max_n: int = 1800) -> list:
         """[t, hr, spo2, pi, flow_raw, rmssd] per band sample, newest `max_n` (the band panel chart)."""

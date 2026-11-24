@@ -198,8 +198,21 @@ class App:
                 value = float(value)
                 if not 0 <= value <= 1:
                     raise ValueError("felt_flow value must be 0..1")
-            m = p.mark(kind, value, str(body.get("note") or "")[:200])
-            self.broadcast("mark", m)
+            m = p.mark(kind, value, str(body.get("note") or "")[:200], client_id=body.get("client_id"))
+            if not m.get("duplicate"):
+                self.broadcast("mark", m)
+            return {"mark": m}
+        if action == "mark_edit":
+            mid = str(body.get("id") or "")
+            value = body.get("value")
+            m0 = next((x for x in p.marks if x.get("id") == mid), None)
+            if value is not None and m0 is not None and m0["kind"] == "felt_flow":
+                value = float(value)
+                if not 0 <= value <= 1:
+                    raise ValueError("felt_flow value must be 0..1")
+            note = body.get("note")
+            m = p.edit_mark(mid, value, None if note is None else str(note)[:200], delete=bool(body.get("delete")))
+            self.broadcast("mark_edit", m)
             return {"mark": m}
         if action == "set_filter":
             notch = float(body.get("notch", p.filter_cfg["notch"]))
