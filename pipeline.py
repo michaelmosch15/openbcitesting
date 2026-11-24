@@ -256,7 +256,11 @@ class Pipeline:
         # the spectra use a FIXED analysis filter (mains notch + 1-45 Hz), independent of the
         # display band-pass, so a 5-50 Hz display setting never removes theta from the flow index
         chain = FilterChain(self.fs, self.n_ch, self.filter_cfg["notch"], 1.0, min(self.analysis_hi_hz, self.fs / 2 - 1))
-        pad = np.concatenate([raw_long[::-1][: n // 2], raw_long], axis=0)   # warm the filter with a mirror
+        # a fresh filter per epoch: remove the electrode DC offset first (often -100..-200 mV; a step
+        # that size rings through the 1 Hz high-pass for seconds and fails the artifact test), then
+        # warm it with the window's own START mirrored, so the pad joins the data without a jump
+        rr = raw_long - np.median(raw_long, axis=0)
+        pad = np.concatenate([rr[: n // 2][::-1], rr], axis=0)
         filt_long = chain.process(pad)[n // 2:]
         filt = filt_long[-n:]
         # display spectrum: the last epoch
