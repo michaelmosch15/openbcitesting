@@ -20,7 +20,17 @@ from pathlib import Path
 
 import numpy as np
 
-BAND_EXTRA = ("spo2", "pi", "rmssd", "sdnn", "rr", "flow_raw", "base_hr", "phase", "uptime_s", "flow_open5", "flow_end5")
+# the band's per-second vitals and decode flags, after the fixed band.csv columns (pipeline.py imports this);
+# the flag columns explain a blank flow: flags_raw = firmware flags byte, no_reading_flag = its bit 7
+BAND_EXTRA = ("spo2", "pi", "rmssd", "sdnn", "rr", "flow_raw", "base_hr", "phase", "uptime_s", "flow_open5", "flow_end5",
+              "flags_raw", "window", "no_reading_flag", "no_reading", "hrv_ok", "mode", "battery_mv",
+              "quality", "ir_dc", "led", "rate_hz")
+
+
+def _cell(v):
+    if v is None:
+        return ""
+    return int(v) if isinstance(v, bool) else v
 
 
 class Recorder:
@@ -137,7 +147,7 @@ class Recorder:
                                                     int(s["held"]), int(s["settling"]),
                                                     "" if s.get("fhi") is None else s["fhi"],
                                                     int(bool(s.get("asleep"))), int(bool(s.get("poor_contact")))]
-                                                   + ["" if s.get(k) is None else s[k] for k in BAND_EXTRA])
+                                                   + [_cell(s.get(k)) for k in BAND_EXTRA])
                     self.counts["band"] += 1
                 elif kind == "console":
                     _, t, line = item

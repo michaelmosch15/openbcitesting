@@ -28,8 +28,8 @@ POSITIONS = {
     "Pz": (0.0, -0.55), "P7": (-0.81, -0.59), "P8": (0.81, -0.59), "O1": (-0.31, -0.95), "O2": (0.31, -0.95),
 }
 LAGS = list(range(-180, 181, 10))
-# the band's per-second vitals (USB status line / sim); recorded in band.csv and shown in the panel
-BAND_EXTRA = ("spo2", "pi", "rmssd", "sdnn", "rr", "flow_raw", "base_hr", "phase", "uptime_s", "flow_open5", "flow_end5")
+# the band's per-second vitals and flags (USB status line / v2 row / sim); recorded in band.csv, shown in the panel
+from recorder import BAND_EXTRA  # noqa: E402
 
 
 def pearson(x: np.ndarray, y: np.ndarray) -> float | None:

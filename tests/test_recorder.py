@@ -166,6 +166,25 @@ class TestRecorder(unittest.TestCase):
             rec2.trial({"block_index": 0, "correct": 1})
             self.assertEqual(rec2.counts["trials"], 1)
 
+    def test_band_flag_columns(self):
+        """band.csv carries the decoder's flags, so a blank flow can be explained afterwards."""
+        from recorder import BAND_EXTRA
+        for k in ("flags_raw", "window", "no_reading_flag", "no_reading", "hrv_ok", "mode", "battery_mv", "quality", "ir_dc", "led"):
+            self.assertIn(k, BAND_EXTRA)
+        with tempfile.TemporaryDirectory() as d:
+            rec = Recorder(Path(d), LABELS, {})
+            sdir = rec.start()
+            rec.band({"t": 1.0, "flow": None, "hr": 80.0, "anom": 0.1, "held": False, "settling": True, "fhi": None,
+                      "flags_raw": 0x80, "window": "unavailable", "no_reading_flag": True,
+                      "no_reading": "band settling after put-on (no reading yet)", "hrv_ok": False, "mode": "LOW",
+                      "battery_mv": 3900, "quality": 7, "ir_dc": 8000, "led": 60})
+            rec.stop()
+            h, rows = read_csv(sdir / "band.csv")
+            r = dict(zip(h, rows[0]))
+            self.assertEqual((r["flags_raw"], r["no_reading_flag"], r["hrv_ok"], r["mode"], r["battery_mv"]), ("128", "1", "0", "LOW", "3900"))
+            self.assertEqual(r["no_reading"], "band settling after put-on (no reading yet)")
+            self.assertEqual((r["window"], r["quality"], r["ir_dc"], r["led"], r["settling"]), ("unavailable", "7", "8000", "60", "1"))
+
     def test_no_epochs_means_no_epochs_csv(self):
         with tempfile.TemporaryDirectory() as d:
             rec = Recorder(Path(d), LABELS, {})
