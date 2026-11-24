@@ -123,6 +123,7 @@ class CytonBoard:
             raise RuntimeError("pyserial is required: pip install pyserial")
         self.port = port
         self.log = log
+        self.reconnects = 0
         self.want_16 = want_16
         self.daisy_even_is_upper = daisy_even_is_upper
         self.ser = serial.Serial()
@@ -211,6 +212,24 @@ class CytonBoard:
         except Exception:  # noqa: BLE001
             pass
 
+    def _reopen(self) -> None:
+        """Close and reopen the dongle port until it works (or stop is requested), then restart streaming."""
+        while not self._stop.is_set():
+            try:
+                self.ser.close()
+            except Exception:  # noqa: BLE001
+                pass
+            time.sleep(1.0)
+            try:
+                self.ser.open()
+                self.ser.reset_input_buffer()
+                self.ser.write(b"b")
+                self.ser.flush()
+                self.log(f"[cyton] {self.port} reopened, streaming again (reconnect #{self.reconnects})")
+                return
+            except (serial.SerialException, OSError) as e:
+                self.log(f"[cyton] reopen failed: {e!r}")
+
     # --- packet reader ------------------------------------------------------------
     def _reader(self) -> None:
         buf = bytearray()
@@ -218,10 +237,29 @@ class CytonBoard:
         pending_half = None       # Daisy mode: (is_upper, 8 channels) waiting for the other half
         t_est = None
         dt = 1.0 / 250.0
+        last_rx = time.time()
         while not self._stop.is_set():
-            chunk = self.ser.read(PACKET * 8)
-            if not chunk:
+            try:
+                chunk = self.ser.read(PACKET * 8)
+            except (serial.SerialException, OSError) as e:
+                # Windows sometimes revokes the FTDI handle ("ClearCommError ... Access is denied")
+                # while the dongle stays enumerated: reopen and restart the stream, never die
+                self.log(f"[cyton] serial error: {e!r} - reconnecting")
+                self.reconnects += 1
+                self._reopen()
+                buf.clear(); last_idx = None; pending_half = None; t_est = None
+                last_rx = time.time()
                 continue
+            if not chunk:
+                if time.time() - last_rx > 5.0:          # stalled but no error: kick the stream
+                    self.log("[cyton] no packets for 5 s - re-sending start")
+                    try:
+                        self.ser.reset_input_buffer(); self.ser.write(b"b"); self.ser.flush()
+                    except (serial.SerialException, OSError):
+                        pass
+                    last_rx = time.time()
+                continue
+            last_rx = time.time()
             buf += chunk
             now = time.time()
             while len(buf) >= PACKET:
@@ -267,7 +305,7 @@ class CytonBoard:
     def status(self) -> dict:
         age = time.time() - self.last_packet_t if self.last_packet_t else None
         return {"kind": "cyton", "port": self.port, "n_ch": self.n_ch, "fs": self.fs,
-                "daisy": self.daisy, "streaming": self.streaming, "packets": self.packets,
+                "daisy": self.daisy, "streaming": self.streaming, "packets": self.packets, "reconnects": self.reconnects,
                 "dropped": self.dropped, "last_packet_age_s": age}
 
 
@@ -291,6 +329,7 @@ class SimBoard:
         self._t0 = time.time()
         self._rng = np.random.default_rng(1)
         self.log = log
+        self.reconnects = 0
         self.log(f"[sim] synthetic {n_ch}-ch board at {self.fs:.0f} Hz")
 
     # what each protocol condition does to the simulated person's flow (set_condition);
@@ -374,5 +413,5 @@ class SimBoard:
 
     def status(self) -> dict:
         return {"kind": "sim", "port": "SIM", "n_ch": self.n_ch, "fs": self.fs, "daisy": self.daisy,
-                "streaming": self.streaming, "packets": self.packets, "dropped": 0,
+                "streaming": self.streaming, "packets": self.packets, "reconnects": self.reconnects, "dropped": 0,
                 "last_packet_age_s": time.time() - self.last_packet_t if self.last_packet_t else None}

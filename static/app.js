@@ -800,13 +800,20 @@ const statsTiles = {
     if (fe && isNum(fe.flow_eeg)) store.lastEegFlow = fe.flow_eeg;
     const artifact = !!(fe && fe.artifact && !isNum(fe.flow_eeg));
     // during an artifact epoch keep the last clean value on screen and tag it; "no index" if there never was one
-    const shown = fe && isNum(fe.flow_eeg) ? fe.flow_eeg : (artifact && isNum(store.lastEegFlow) ? store.lastEegFlow : null);
-    $('tileEeg').textContent = isNum(shown) ? shown.toFixed(2) : '—';
+    // withheld by the readiness gate: show nothing, never a stale value (helmet off / settling / no reference)
+    const shown = fe && isNum(fe.flow_eeg) ? fe.flow_eeg
+      : (artifact && !fe.gated && isNum(store.lastEegFlow) ? store.lastEegFlow : null);
+    // strict index blank -> show the LIVE helmet flow (display only, never paired / reported)
+    const live = !isNum(shown) && fe && isNum(fe.flow_live) ? fe.flow_live : null;
+    const hm = fe && isNum(fe.flow_helmet_60s) ? fe.flow_helmet_60s : null;                 // robust helmet flow, 60-s median
+    const held = !isNum(hm) && !isNum(shown) && !isNum(live) && fe && isNum(fe.flow_eeg_60s) ? fe.flow_eeg_60s : null;   // 60-s median of valid strict values
+    $('tileEeg').textContent = isNum(hm) ? hm.toFixed(2) : (isNum(shown) ? shown.toFixed(2) : (isNum(live) ? live.toFixed(2) : (isNum(held) ? held.toFixed(2) : '—')));
     const tagHtml = artifact ? '<span class="tag warn">' + (isNum(store.lastEegFlow) ? 'artifact' : 'no index') + '</span> ' : '';
     const segs = fe && isNum(fe.n_segments_used) ? fe.n_segments_used + '/5 clean segments' : '';
     const base = fe ? (fe.baseline_ready === false ? 'learning baseline…' : (isNum(fe.n_good) ? fe.n_good + ' good channels' : '')) : (store.connected ? 'no epoch yet' : '');
     const gatedTag = fe && fe.gated ? '<span class="tag bad">withheld: ' + esc(fe.gated) + '</span> ' : '';
-    $('tileEegSub').innerHTML = (gatedTag || tagHtml) + esc([base, segs, fe && Array.isArray(fe.clean_channels) && fe.clean_channels.length ? 'clean: ' + fe.clean_channels.join(' ') : ''].filter(Boolean).join(' · '));
+    const liveTag = isNum(live) ? '<span class="tag warn">live (not validated) · ' + esc(fe.live_channels || '') + '</span> ' : '';
+    $('tileEegSub').innerHTML = liveTag + (gatedTag || tagHtml) + esc([base, segs, fe && Array.isArray(fe.clean_channels) && fe.clean_channels.length ? 'clean: ' + fe.clean_channels.join(' ') : ''].filter(Boolean).join(' · '));
     // readiness banner: why the index is (not) being scored, in operator terms
     const rd = a && a.readiness;
     const banner = $('readyBanner');
@@ -1848,7 +1855,7 @@ function onAnalysis(d) {
   // append the EEG flow point (dedupe on t)
   const fe = d.flow_eeg;
   if (fe && isNum(d.t) && d.t !== store.lastAnalysisT) {
-    store.eeg.push([d.t, isNum(fe.flow_eeg) ? fe.flow_eeg : null]);
+    store.eeg.push([d.t, isNum(fe.flow_helmet_60s) ? fe.flow_helmet_60s : (isNum(fe.flow_eeg_60s) ? fe.flow_eeg_60s : (isNum(fe.flow_eeg) ? fe.flow_eeg : null))]);
     store.lastAnalysisT = d.t;
     if (store.eeg.length % 200 === 0) trimHistory();
   }

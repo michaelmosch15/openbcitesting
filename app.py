@@ -154,6 +154,58 @@ def open_board(args, cfg: dict):
     return CytonBoard(port, want_16=want_16, daisy_even_is_upper=bool(cfg.get("daisy_even_is_upper", True)), log=log)
 
 
+def preload_today(pipeline, sessions_dir: Path, match: str = "") -> None:
+    """Put today's earlier recordings back on the dashboard chart after a restart: strict EEG index,
+    band flow and marks (felt-flow ratings). Display history only; nothing is paired or re-scored."""
+    import csv
+    day = time.strftime("%Y-%m-%d")
+    n_e = n_b = n_m = 0
+
+    def num(v):
+        try:
+            return float(v)
+        except (TypeError, ValueError):
+            return None
+
+    for d in sorted(sessions_dir.glob(day + "_*")):
+        if match and match not in d.name:
+            continue
+        try:
+            f = d / "epochs.csv"
+            if f.exists():
+                for r in csv.DictReader(f.open(encoding="utf-8", errors="replace")):
+                    t, v = num(r.get("t")), num(r.get("flow_eeg"))
+                    if t is not None and v is not None:
+                        pipeline.eeg_hist.append((t, v)); n_e += 1
+                    s60 = num(r.get("flow_helmet_60s"))
+                    if s60 is None:
+                        s60 = num(r.get("flow_eeg_60s"))
+                    if t is not None and hasattr(pipeline, "eeg_smooth_hist"):
+                        pipeline.eeg_smooth_hist.append((t, s60 if s60 is not None else v))
+            f = d / "band.csv"
+            if f.exists():
+                for r in csv.DictReader(f.open(encoding="utf-8", errors="replace")):
+                    t = num(r.get("t"))
+                    if t is None:
+                        continue
+                    smp = {k: num(r.get(k)) for k in ("hr", "spo2", "pi", "flow_raw", "rmssd", "sdnn", "anom")}
+                    smp.update(t=t, flow=num(r.get("flow")), held=r.get("held") in ("1", "True", "true"))
+                    pipeline.band_hist.append((t, smp["flow"], smp)); n_b += 1
+            f = d / "marks.csv"
+            if f.exists():
+                for r in csv.DictReader(f.open(encoding="utf-8", errors="replace")):
+                    t = num(r.get("t"))
+                    if t is None:
+                        continue
+                    v = num(r.get("value"))
+                    pipeline.marks.append({"t": t, "kind": r.get("kind") or "", "value": v if v is not None else r.get("value"),
+                                           "note": r.get("note") or ""}); n_m += 1
+        except Exception as e:  # noqa: BLE001
+            log(f"[history] skipped {d.name}: {e!r}")
+    log(f"[history] restored today's earlier data: {n_e} EEG index points, {n_b} band samples, {n_m} marks")
+
+
+
 def main(argv=None) -> int:
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--sim", action="store_true", help="synthetic helmet + synthetic band, no hardware")
@@ -175,6 +227,8 @@ def main(argv=None) -> int:
                     help="Astra panels (OpenAI gpt-6-astra, key from BioProxal2026/.env): on = ready, "
                          "live = start the live analyst at once, off = no Astra")
     ap.add_argument("--no-browser", action="store_true")
+    ap.add_argument("--history-match", help="restore only today's session folders whose name contains this text (one wearer)")
+    ap.add_argument("--fresh", action="store_true", help="do not restore today's earlier recordings to the chart (new wearer)")
     ap.add_argument("--no-stream", action="store_true", help="do not start streaming automatically")
     ap.add_argument("--config", default=str(HERE / "config.json"))
     args = ap.parse_args(argv)
@@ -189,6 +243,8 @@ def main(argv=None) -> int:
     recorder = Recorder(HERE / "sessions", labels=[], meta={})
     pipeline = Pipeline(board, cfg, recorder=recorder, log=log)
     recorder.labels = pipeline.labels
+    if not args.fresh:                       # --fresh: new wearer, do not restore earlier data to the chart
+        preload_today(pipeline, HERE / "sessions", args.history_match or "")
     from server import SERVER_VERSION
     recorder.meta = {"board": board.status(), "config": cfg, "server_version": SERVER_VERSION}
 

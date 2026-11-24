@@ -99,10 +99,16 @@ class TestV2Row(unittest.TestCase):
         self.assertEqual(s["pi"], 1.23); self.assertEqual(s["anom"], 0.6641); self.assertEqual(s["flow"], 0.42)
         self.assertEqual(s["battery_mv"], 3552); self.assertEqual(s["mode"], "LOW"); self.assertFalse(s["held"])
         self.assertTrue(s["hrv_ok"]); self.assertEqual(s["ir_dc"], 8000); self.assertEqual(s["led"], 60); self.assertEqual(s["rate_hz"], 100)
-        row2 = struct.pack("<IhhhhhhHHHHBBBBHBB", 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 3000, 1, 2, 0x20 | 0x08 | 0x04, 0, 0, 0, 0)
+        row2 = struct.pack("<IhhhhhhHHHHBBBBHBB", 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 3000, 1, 2, 0x80 | 0x08 | 0x04, 0, 0, 0, 0)
         s2 = B.decode_v2_row(row2)
         self.assertIsNone(s2["flow"]); self.assertIsNone(s2["hr"]); self.assertEqual(s2["mode"], "HIGH"); self.assertTrue(s2["held"])
         self.assertTrue(s2["asleep"]); self.assertTrue(s2["poor_contact"]); self.assertEqual(s2["rate_hz"], 25)
+        # flags b4-6 = flow window (3 = active): a reading, NOT "no reading" (bit 7 is the no-reading flag)
+        row3 = struct.pack("<IhhhhhhHHHHBBBBHBB", 5, 840, 0, 0, 0, 0, 44, 820, 0, 5180, 3980, 0, 2, 0x30, 0, 0, 0, 0)
+        s3 = B.decode_v2_row(row3)
+        self.assertEqual(s3["flow"], 0.518); self.assertIsNone(s3["no_reading"]); self.assertEqual(s3["window"], "active")
+        row4 = struct.pack("<IhhhhhhHHHHBBBBHBB", 5, 840, 0, 0, 0, 0, 44, 820, 0, 5180, 3980, 0, 2, 0x80, 0, 0, 0, 0)
+        self.assertIsNone(B.decode_v2_row(row4)["flow"])
 
     def test_find_tools_dir_v2(self):
         with tempfile.TemporaryDirectory() as d:

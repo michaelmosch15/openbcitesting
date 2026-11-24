@@ -13,7 +13,7 @@ import numpy as np
 from cyton import FULL_SCALE_UV
 from dsp import (BAND_ORDER, INDEX_BANDS, TOTAL_BAND, FilterChain, band_powers, band_powers_of, psd, quality,
                  relative_powers, welch, welch_masked)
-from flow_index import FlowIndex
+from flow_index import FRONTAL_FALLBACK, FRONTAL_PREFERRED, Baseline, FlowIndex, sigmoid
 
 LABELS_8 = ["Fp1", "Fp2", "C3", "C4", "P7", "P8", "O1", "O2"]
 LABELS_16 = LABELS_8 + ["F7", "F8", "F3", "F4", "T7", "T8", "P3", "P4"]
@@ -72,6 +72,31 @@ def bootstrap_ci(x: np.ndarray, y: np.ndarray, n_boot: int = 500, seed: int = 0)
     return [round(float(np.percentile(rs, 2.5)), 3), round(float(np.percentile(rs, 97.5)), 3)]
 
 
+# --- live helmet flow (display only; the evidence for these choices is tools/live_eval/) -------
+LIVE_HP_HZ = 4.0            # extra high-pass before the artifact test and the spectrum: eye / head movement is below it
+LIVE_THETA, LIVE_TOTAL = (5.0, 8.0), (5.0, 30.0)   # clear of the high-pass skirt and blink leakage; no EMG / mains above 30
+LIVE_P2P_UV, LIVE_ABS_UV = 100.0, 60.0             # artifact limits on the high-passed 2-s segment (EEG there is ~10 uV rms)
+LIVE_HORIZON_S = 60.0       # clean segments are pooled over this long (10 s of EEG cannot pin a 3-Hz band down)
+LIVE_MIN_SEGMENTS = 10      # clean 2-s segments (50 % overlap: ~11 s of signal) a channel needs in the horizon
+LIVE_WARM_S = 2.0           # start of the freshly filtered window: high-pass warm-up on the DC offset, never used
+LIVE_SD_FLOOR = 0.15        # log units, ~2x the estimator noise at 60 s: noise alone moves the number ~0.4-0.6
+
+
+_LIVE_HP_KERNELS: dict = {}
+
+
+def _live_hp_kernel(fs: float) -> np.ndarray:
+    """The LIVE_HP_HZ high-pass (the same 4th-order Butterworth sections as FilterChain) as a 1-s
+    FIR kernel: its impulse response has died out by then, and a convolution is ~100x faster
+    than the per-sample biquad loop."""
+    k = _LIVE_HP_KERNELS.get(fs)
+    if k is None:
+        imp = np.zeros((int(fs), 1))
+        imp[0, 0] = 1.0
+        k = _LIVE_HP_KERNELS[fs] = FilterChain(fs, 1, 0, LIVE_HP_HZ, 0).process(imp)[:, 0]
+    return k
+
+
 class Pipeline:
     def __init__(self, board, config: dict, recorder=None, log=print):
         self.board = board
@@ -94,6 +119,12 @@ class Pipeline:
         self.flow_weights = {k: float(fi.get(k, DEFAULT_WEIGHTS[k])) for k in ("theta", "alpha", "beta")}
         self.flow = FlowIndex(self.labels, self.flow_weights, str(fi.get("baseline_mode", "rest")),
                               int(fi.get("baseline_epochs", 150)), int(fi.get("warmup_epochs", 15)))
+        # LIVE helmet flow (display / exploratory only, never paired or reported; see _live_flow): theta
+        # 5-8 Hz as a share of 5-30 Hz on a 4 Hz high-passed copy, clean 2-s segments pooled over 60 s,
+        # z vs the session until the protocol's rest block freezes a resting baseline
+        self.live_base = Baseline("rest", warmup=15)
+        self._recent_corr: deque = deque(maxlen=15)             # last 15 epochs of mean |corr| (reference gate)
+        self.eeg_smooth_hist: deque = deque(maxlen=20000)       # chart line: (t, live helmet flow, else 60-s median of flow_eeg)
         self.artifact_p2p_uv = float(fi.get("artifact_p2p_uv", 150.0))
         self.artifact_abs_uv = float(fi.get("artifact_abs_uv", 100.0))
         self.analysis_hi_hz = float(fi.get("analysis_hi_hz", 45.0))
@@ -211,6 +242,17 @@ class Pipeline:
         t_end = float(t[-1])
         raw = raw_long[-n:]
         q = quality(raw, FULL_SCALE_UV)
+        # mains-hum share of the raw signal (58-62 Hz over 1-100 Hz): a comb on hair, not scalp, reads ~0.9+
+        try:
+            xr = raw - raw.mean(axis=0)
+            S = np.abs(np.fft.rfft(xr * np.hanning(len(xr))[:, None], axis=0)) ** 2
+            fr_ = np.fft.rfftfreq(len(xr), 1.0 / self.fs)
+            tot = S[(fr_ >= 1) & (fr_ < 100)].sum(axis=0)
+            hum = S[(fr_ >= 58) & (fr_ < 62)].sum(axis=0) / np.where(tot > 0, tot, 1.0)
+            for i in range(self.n_ch):
+                q[i]["hum"] = round(float(hum[i]), 2)
+        except Exception:  # noqa: BLE001
+            pass
         # the spectra use a FIXED analysis filter (mains notch + 1-45 Hz), independent of the
         # display band-pass, so a 5-50 Hz display setting never removes theta from the flow index
         chain = FilterChain(self.fs, self.n_ch, self.filter_cfg["notch"], 1.0, min(self.analysis_hi_hz, self.fs / 2 - 1))
@@ -271,8 +313,21 @@ class Pipeline:
         rec = self.flow.update(rel_idx, abs_idx, good_epoch, artifact=artifact, extra=extra)
         rec = {"t": round(t_end, 3), **rec, "p2p_uv": round(p2p, 1), "n_segments_used": int(n_used),
                "clean_channels": [self.labels[i] for i in clean_channels], "gated": ",".join(gated) or None}
+        rec.update(self._live_flow(filt_long, good))
         if rec["flow_eeg"] is not None:
             self.eeg_hist.append((t_end, rec["flow_eeg"]))
+        # chart line: median of the valid strict values in the last 60 s (None when there were none), so
+        # the helmet trace is continuous across short artifact gaps. Display only; pairs/report use eeg_hist.
+        recent = [v for (tt, v) in list(self.eeg_hist)[-40:] if t_end - tt <= 60.0]
+        rec["flow_eeg_60s"] = round(float(np.median(recent)), 4) if recent else None
+        rec["flow_eeg_60s_n"] = len(recent)
+        # helmet number shown on the chart / tile = the live index (4 Hz high-pass artifact test, clean
+        # segments pooled over 60 s; see _live_flow). Keys kept for the dashboard and epochs.csv.
+        rec["flow_helmet"] = rec.get("flow_live")
+        rec["flow_helmet_60s"] = rec.get("flow_live")
+        rec["helmet_channels"] = rec.get("live_channels")
+        line = rec.get("flow_helmet_60s")
+        self.eeg_smooth_hist.append((t_end, line if line is not None else rec["flow_eeg_60s"]))
         analysis = {
             "t": round(t_end, 3),
             "fft": {"freqs": np.round(f, 3).tolist(), "psd": [np.round(P[:, c], 5).tolist() for c in range(self.n_ch)]},
@@ -295,6 +350,84 @@ class Pipeline:
                 epoch_rec[f"q_{lab}"] = q[i]["state"]
             self.recorder.epoch(epoch_rec)
 
+    def _live_flow(self, filt_long: np.ndarray, good: list) -> dict:
+        """Live helmet flow: frontal theta (5-8 Hz) as a share of 5-30 Hz, from artifact-free 2-s
+        segments of a 4 Hz high-passed copy, pooled over the last LIVE_HORIZON_S, z vs the session
+        (the rest block once frozen). Not the pre-registered index (flow_eeg); never paired with
+        the band or used by report.py. Never raises: a failure is one logged line and no number."""
+        none = {"flow_live": None, "live_channels": None, "live_z": None}
+        try:
+            return self._live_flow_inner(filt_long, good, none)
+        except Exception as e:  # noqa: BLE001
+            if not getattr(self, "_live_err", False):
+                self._live_err = True
+                self.log(f"[pipeline] live flow error: {e!r}")
+            return none
+
+    def _live_flow_inner(self, filt_long: np.ndarray, good: list, none: dict) -> dict:
+        if "reference" in self.readiness.get("reasons", []):          # not on a head / no ear clip
+            return none
+        fr = [i for i, lab in enumerate(self.labels) if good[i] and lab in FRONTAL_PREFERRED]
+        fr = fr or [i for i, lab in enumerate(self.labels) if good[i] and lab in FRONTAL_FALLBACK]
+        if not fr:
+            return none
+        fs = self.fs
+        seg = int(fs * self.index_seg_s)
+        step = max(1, seg // 2)
+        segs = getattr(self, "_live_segs", None)     # (abs start, theta [n_ch], total [n_ch], clean [n_ch]) per segment
+        if segs is None:                             # made here, not in __init__, so a hot reload keeps working
+            segs = self._live_segs = deque()
+            self._live_next = 0
+        end = int(self.board.buffer.count)           # absolute index one past the newest sample of filt_long
+        start = end - len(filt_long)
+        if end < self._live_next:                    # the sample counter restarted (new board)
+            segs.clear()
+            self._live_next = 0
+        # each segment is analysed once, on a fixed grid of absolute sample positions, never inside
+        # the filter warm-up at the start of the window
+        s = -(-max(self._live_next, start + int(LIVE_WARM_S * fs)) // step) * step
+        if s + seg <= end:
+            # eye and head movement live below ~4 Hz and are far larger than the EEG: on a 4 Hz
+            # high-passed copy they neither fail the amplitude test nor leak into the theta band
+            k = _live_hp_kernel(fs)
+            a = s - start - (len(k) - 1)             # >= 0: LIVE_WARM_S is longer than the kernel
+            hp = np.zeros((end - s, self.n_ch))
+            for i in fr:
+                hp[:, i] = np.convolve(filt_long[a:, i], k, "valid")
+            in_fr = np.zeros(self.n_ch, bool)
+            in_fr[fr] = True
+            while s + seg <= end:
+                x = hp[s - (end - len(hp)):s - (end - len(hp)) + seg]
+                f, P = psd(x, fs)
+                bp = band_powers_of(f, P, {"theta": LIVE_THETA, "total": LIVE_TOTAL})
+                clean = (in_fr & (x.max(axis=0) - x.min(axis=0) <= LIVE_P2P_UV) & (np.abs(x).max(axis=0) <= LIVE_ABS_UV)
+                         & (bp["theta"] > 0) & (bp["total"] > 0))
+                segs.append((s, bp["theta"], bp["total"], clean))
+                s += step
+            self._live_next = s
+        while segs and segs[0][0] < end - int(LIVE_HORIZON_S * fs):
+            segs.popleft()
+        if not segs:
+            return {**none, "live_channels": "no clean signal"}
+        th, tot, ok = (np.asarray([e[k] for e in segs]) for k in (1, 2, 3))
+        vals = {}
+        for i in fr:                                 # per channel: pooled power over its own clean segments
+            m = ok[:, i]
+            if m.sum() >= LIVE_MIN_SEGMENTS:
+                vals[i] = float(np.log(th[m, i].sum() / tot[m, i].sum()))
+        if len(vals) < min(2, len(fr)):              # one electrode alone is not trusted when there are others
+            return {**none, "live_channels": "no clean signal"}
+        names = " ".join(self.labels[i] for i in vals)
+        v = float(np.median(list(vals.values())))
+        self.live_base.push(v)
+        if not self.live_base.ready:
+            return {**none, "live_channels": names}
+        # the spread is floored: over a steady stretch the session SD is only estimator noise, and
+        # dividing by it would stretch that noise over the whole 0-1 range
+        z = (v - self.live_base.mean) / max(self.live_base.std, LIVE_SD_FLOOR)
+        z = max(-20.0, min(20.0, z))
+        return {"flow_live": round(sigmoid(z), 4), "live_channels": names, "live_z": round(z, 3)}
+
     def _readiness(self, q: list, good: list, filt: np.ndarray, raw: np.ndarray, clean_channels: list) -> dict:
         """Why the index is (not) usable right now, in operator terms. Reasons:
         contact (railed / near / flat channels), reference (the good channels are one shared
@@ -314,7 +447,13 @@ class Pipeline:
                 c = np.corrcoef(x[:, ok].T)
                 m = np.abs(c[np.triu_indices(len(c), 1)]).mean()
                 detail["common_mode_corr"] = round(float(m), 2)
-                if m >= 0.9:
+                # a blink / eye movement makes every forehead channel agree for one 2-s epoch; a missing
+                # reference (ear clip off, headset on a desk) keeps them agreeing. Gate on the median of the
+                # last 15 epochs (30 s), so only the sustained case withholds the index.
+                self._recent_corr.append(float(m))
+                ms = float(np.median(self._recent_corr))
+                detail["common_mode_corr_30s"] = round(ms, 2)
+                if ms >= 0.9:
                     reasons.append("reference")
         off = [self.labels[i] for i in gi if np.abs(raw[:, i]).max() > 100000.0]
         if off:
@@ -352,7 +491,7 @@ class Pipeline:
                 self.stats = self._compute_stats()
 
     def _eeg_mean(self, t0: float, t1: float) -> float | None:
-        vals = [v for (t, v) in self.eeg_hist if t0 <= t <= t1]
+        vals = [v for (t, v) in list(self.eeg_hist) if t0 <= t <= t1]
         return float(np.mean(vals)) if vals else None
 
     def band_view(self) -> dict | None:
@@ -422,8 +561,8 @@ class Pipeline:
             t0, t1 = b["t0"], b["t1"] or time.time()
             if t1 - t0 < 30:
                 continue
-            eeg = [v for (t, v) in self.eeg_hist if t0 <= t <= t1 and v is not None]
-            band = [fl for (t, fl, s) in self.band_hist
+            eeg = [v for (t, v) in list(self.eeg_hist) if t0 <= t <= t1 and v is not None]
+            band = [fl for (t, fl, s) in list(self.band_hist)
                     if t0 <= t <= t1 and fl is not None and not s.get("held") and not s.get("asleep")
                     and not s.get("settling") and not s.get("poor_contact")]
             fss = None
@@ -483,7 +622,7 @@ class Pipeline:
             st["blocks"] = None
         if not self.pairs:
             return st
-        arr = np.array([(t, b, e) for (t, b, e) in self.pairs], float)
+        arr = np.array([(t, b, e) for (t, b, e) in list(self.pairs)], float)
         t, b, e = arr[:, 0], arr[:, 1], arr[:, 2]
         st["n_pairs"] = int(len(arr))
         r = pearson(b, e)
@@ -514,7 +653,7 @@ class Pipeline:
                 best = max(valid, key=lambda x: x[1])
                 st["best_lag_s"], st["r_at_best_lag"] = best
         # felt-flow marks
-        felt = [m for m in self.marks if m["kind"] == "felt_flow" and m.get("value") is not None]
+        felt = [m for m in list(self.marks) if m["kind"] == "felt_flow" and m.get("value") is not None]
         if felt:
             fb, fe, fv = [], [], []
             for m in felt:
@@ -523,7 +662,7 @@ class Pipeline:
                 except (TypeError, ValueError):
                     continue
                 eeg = self._eeg_mean(m["t"] - 60, m["t"])
-                near = [(abs(tb - m["t"]), fl) for (tb, fl, _) in self.band_hist if fl is not None and abs(tb - m["t"]) <= 90]
+                near = [(abs(tb - m["t"]), fl) for (tb, fl, _) in list(self.band_hist) if fl is not None and abs(tb - m["t"]) <= 90]
                 if eeg is not None and near:
                     fv.append(v)
                     fe.append(eeg)
@@ -537,11 +676,12 @@ class Pipeline:
 
     # --- history for the browser ----------------------------------------------
     def history(self) -> dict:
-        return {"pairs": [[round(t, 2), round(b, 4), round(e, 4)] for (t, b, e) in self.pairs],
-                "eeg": [[round(t, 2), v] for (t, v) in self.eeg_hist],
-                "band": [[round(t, 2), fl, bool(s.get("held"))] for (t, fl, s) in self.band_hist],
+        return {"pairs": [[round(t, 2), round(b, 4), round(e, 4)] for (t, b, e) in list(self.pairs)],
+                "eeg": [[round(t, 2), v] for (t, v) in (list(self.eeg_smooth_hist) or list(self.eeg_hist))],
+                "eeg_raw": [[round(t, 2), v] for (t, v) in list(self.eeg_hist)],
+                "band": [[round(t, 2), fl, bool(s.get("held"))] for (t, fl, s) in list(self.band_hist)],
                 "vitals": self.vitals(),
-                "marks": [[round(m["t"], 2), m["kind"], m["value"]] for m in self.marks]}
+                "marks": [[round(m["t"], 2), m["kind"], m["value"]] for m in list(self.marks)]}
 
     def vitals(self, max_n: int = 1800) -> list:
         """[t, hr, spo2, pi, flow_raw, rmssd] per band sample, newest `max_n` (the band panel chart)."""

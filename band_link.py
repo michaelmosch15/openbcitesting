@@ -296,7 +296,10 @@ DATALOG_ROW = struct.Struct("<IhhhhhhHHHHBBBBHBB")      # firmware_v2 DatalogRow
 def decode_v2_row(row: bytes, t: float | None = None) -> dict:
     """One firmware_v2 datalog row -> the same sample shape the status line gives."""
     (up, hr, spo2, sdnn, rmssd, resp, pi, an, rk, fl, mv, mode, phase, flags, qual, dcq, led, cfg) = DATALOG_ROW.unpack(row[:32])
-    no_flow = bool(flags & 0x20)
+    # STATE-style flags byte (firmware_v2 bpx_orch.c): b0 hrv_valid, b1 held, b2 asleep, b3 poor contact,
+    # b4-6 flow window (0 unavailable, 1 closed, 2 opening, 3 active, 4 fading), b7 no reading / settling
+    no_flow = bool(flags & 0x80)
+    window = (flags >> 4) & 0x07
     hrv_ok = bool(flags & 0x01)
     mode_s = "HIGH" if mode == 1 else "LOW"
     # a 0.0000 published while HRV is not yet valid (cold start, first minutes on the wrist) is
@@ -310,6 +313,7 @@ def decode_v2_row(row: bytes, t: float | None = None) -> dict:
          "hr": hr / 10 if hr > 0 else None, "spo2": spo2 / 10 if spo2 > 0 else None, "sdnn": sdnn / 10, "rmssd": rmssd / 10,
          "rr": resp / 10, "pi": pi / 100, "anom": an / 10000, "risk": rk / 10000,
          "flow": None if no_reading else fl / 10000, "flow_raw": fl / 10000, "base_hr": None, "no_reading": no_reading,
+         "window": ("unavailable", "closed", "opening", "active", "fading")[window] if window < 5 else None, "flags_raw": flags,
          "battery_mv": mv, "held": mode == 1, "asleep": bool(flags & 0x04), "poor_contact": bool(flags & 0x08),
          "settling": False, "hrv_ok": hrv_ok, "quality": qual, "ir_dc": dcq * 8, "led": led & 0x7F,
          "rate_hz": 100 if (cfg >> 5) & 1 else 25, "flow_open5": None, "flow_end5": None}

@@ -84,9 +84,11 @@ class App:
         phase = ev.get("phase")
         if phase == "block_start" and ev.get("baseline"):
             self.pipeline.flow.start_rest()
+            self.pipeline.live_base.start_rest()
             self.log("[protocol] collecting the resting baseline")
         elif phase == "block_end" and ev.get("baseline"):
             self.pipeline.flow.end_rest()
+            self.pipeline.live_base.end_rest()
             self.log(f"[protocol] baseline {self.pipeline.flow.baseline_state}")
         self.pipeline.on_protocol(ev)
         if hasattr(self.board, "set_condition"):            # the simulator follows the condition

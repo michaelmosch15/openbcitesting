@@ -48,7 +48,7 @@
     "artifact_scope": "channel",
     "min_clean_channels": 2,
     "gate_on_readiness": true,
-    "gate_reasons": ["reference", "few"]
+    "gate_reasons": ["reference", "few", "settling"]
   },
   "labels_8_flow": ["Fz", "F3", "F4", "Cz", "C3", "C4", "P3", "P4"],
   "pair_window_s": {
