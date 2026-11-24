@@ -5,6 +5,7 @@
     python app.py --band ble       # band straight to this laptop over Bluetooth (close the phone app)
     python app.py --band usb       # band on a USB cable (firmware tools + master key)
     python app.py --source udp     # mirror the real OpenBCI GUI's Networking widget (UDP 12345)
+    python app.py --resume         # same wearer after a restart: today's chart + frozen rest baseline back
 
 Then open http://127.0.0.1:8765 (opens by itself unless --no-browser).
 """
@@ -256,8 +257,11 @@ def main(argv=None) -> int:
                     help="Astra panels (OpenAI gpt-6-astra, key from BioProxal2026/.env): on = ready, "
                          "live = start the live analyst at once, off = no Astra")
     ap.add_argument("--no-browser", action="store_true")
-    ap.add_argument("--history-match", help="restore only today's session folders whose name contains this text (one wearer)")
-    ap.add_argument("--fresh", action="store_true", help="do not restore today's earlier recordings to the chart (new wearer)")
+    ap.add_argument("--resume", action="store_true",
+                    help="put today's earlier recordings back on the chart and restore today's frozen rest baseline "
+                         "(same wearer after a restart; narrow it with --history-match). Default: start fresh")
+    ap.add_argument("--history-match", help="with --resume: only today's session folders whose name contains this text (one wearer)")
+    ap.add_argument("--fresh", action="store_true", help="start with an empty chart (the default; kept for old command lines)")
     ap.add_argument("--no-stream", action="store_true", help="do not start streaming automatically")
     ap.add_argument("--config", default=str(HERE / "config.json"))
     args = ap.parse_args(argv)
@@ -272,7 +276,7 @@ def main(argv=None) -> int:
     recorder = Recorder(HERE / "sessions", labels=[], meta={})
     pipeline = Pipeline(board, cfg, recorder=recorder, log=log)
     recorder.labels = pipeline.labels
-    if not args.fresh:                       # --fresh: new wearer, do not restore earlier data to the chart
+    if args.resume and not args.fresh:       # default fresh: never mix another wearer's data into the chart
         preload_today(pipeline, HERE / "sessions", args.history_match or "")
         restore_baseline(pipeline, HERE / "sessions", args.history_match or "")
     from server import SERVER_VERSION
@@ -320,6 +324,8 @@ def main(argv=None) -> int:
         argv = [sys.executable] + sys.argv
         if "--no-browser" not in argv:
             argv.append("--no-browser")
+        if "--resume" not in argv and "--fresh" not in argv:
+            argv.append("--resume")           # a restart continues the same session: keep the chart and baseline
         shutdown_all()
         if held["httpd"] is not None:
             try:

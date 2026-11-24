@@ -365,9 +365,13 @@ class Pipeline:
         try:
             return self._live_flow_inner(filt_long, good, none)
         except Exception as e:  # noqa: BLE001
-            if not getattr(self, "_live_err", False):
-                self._live_err = True
-                self.log(f"[pipeline] live flow error: {e!r}")
+            # rate-limited, not once-only: a fault that comes back later is still seen
+            now = time.time()
+            self._live_err_n = getattr(self, "_live_err_n", 0) + 1
+            if now - getattr(self, "_live_err_t", 0.0) >= 60.0:
+                extra = f" ({self._live_err_n - 1} more since the last report)" if self._live_err_n > 1 else ""
+                self.log(f"[pipeline] live flow error: {e!r}{extra}")
+                self._live_err_t, self._live_err_n = now, 0
             return none
 
     def _live_flow_inner(self, filt_long: np.ndarray, good: list, none: dict) -> dict:

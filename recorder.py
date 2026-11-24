@@ -210,6 +210,8 @@ class Recorder:
                     if self._epoch_header is None:
                         self._epoch_header = list(rec.keys())
                         self._open("epochs", self._epoch_header)
+                    elif any(k not in self._epoch_header for k in rec):
+                        self._widen_epochs([k for k in rec if k not in self._epoch_header])
                     self._writers["epochs"].writerow([rec.get(k, "") for k in self._epoch_header])
                     self.counts["epochs"] += 1
                 elif kind == "band":
@@ -249,6 +251,26 @@ class Recorder:
                         self._console.flush()
             except Exception as e:  # noqa: BLE001
                 print(f"[recorder] write error: {e!r}")
+
+    def _widen_epochs(self, new_keys: list[str]) -> None:
+        """A key that the first epoch did not have (a relabel, a new field): rewrite epochs.csv with
+        the wider header, earlier rows padded with blanks, instead of dropping the new column."""
+        f = self._files.pop("epochs")
+        f.flush()
+        f.close()
+        path = self.dir / "epochs.csv"
+        with open(path, newline="", encoding="utf-8") as fh:
+            rows = list(csv.reader(fh))[1:]
+        self._epoch_header = self._epoch_header + list(new_keys)
+        tmp = path.with_suffix(".tmp")
+        with open(tmp, "w", newline="", encoding="utf-8") as fh:
+            w = csv.writer(fh)
+            w.writerow(self._epoch_header)
+            for r in rows:
+                w.writerow(r + [""] * (len(self._epoch_header) - len(r)))
+        tmp.replace(path)
+        f = open(path, "a", newline="", encoding="utf-8")
+        self._files["epochs"], self._writers["epochs"] = f, csv.writer(f)
 
     def status(self) -> dict:
         return {"active": self.active, "dir": str(self.dir) if self.dir else None,
