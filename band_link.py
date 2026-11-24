@@ -293,12 +293,24 @@ def _load_module(path: Path, name: str):
 DATALOG_ROW = struct.Struct("<IhhhhhhHHHHBBBBHBB")      # firmware_v2 DatalogRow, 32 B (tools/live_usb.py)
 
 
-def decode_v2_row(row: bytes, t: float | None = None) -> dict:
-    """One firmware_v2 datalog row -> the same sample shape the status line gives."""
+SETTLE_S = 600          # bit 7 within this long of a put-on (or boot) on a worn band = settling (best guess)
+
+
+def decode_v2_row(row: bytes, t: float | None = None, worn_s: float | None = None) -> dict:
+    """One firmware_v2 datalog row -> the same sample shape the status line gives.
+
+    Bit 7 of the flags byte means "no reading" and the firmware sets it both while it settles after
+    a put-on and whenever it simply has no number; the row does not say which. `no_reading_flag` is
+    the raw bit. `settling` is an INFERENCE: bit 7 set on a worn band (heart rate present, not poor
+    contact, not asleep) within SETTLE_S of the put-on - `worn_s`, seconds since the band last left
+    poor-contact / sleep, when the caller tracks it, else the band's uptime."""
     (up, hr, spo2, sdnn, rmssd, resp, pi, an, rk, fl, mv, mode, phase, flags, qual, dcq, led, cfg) = DATALOG_ROW.unpack(row[:32])
     # STATE-style flags byte (firmware_v2 bpx_orch.c): b0 hrv_valid, b1 held, b2 asleep, b3 poor contact,
-    # b4-6 flow window (0 unavailable, 1 closed, 2 opening, 3 active, 4 fading), b7 no reading / settling
+    # b4-6 flow window (0 unavailable, 1 closed, 2 opening, 3 active, 4 fading), b7 no reading or settling
     no_flow = bool(flags & 0x80)
+    asleep, poor = bool(flags & 0x04), bool(flags & 0x08)
+    since = worn_s if worn_s is not None else up
+    settling = bool(no_flow and hr > 0 and not poor and not asleep and since is not None and since <= SETTLE_S)
     window = (flags >> 4) & 0x07
     hrv_ok = bool(flags & 0x01)
     mode_s = "HIGH" if mode == 1 else "LOW"
@@ -306,7 +318,7 @@ def decode_v2_row(row: bytes, t: float | None = None) -> dict:
     # "not computed", not a low flow: the dashboard shows "no reading" and nothing is paired
     no_reading = None
     if no_flow:
-        no_reading = "band reports no flow reading"
+        no_reading = "band settling after put-on (no reading yet)" if settling else "band reports no flow reading"
     elif fl == 0 and (not hrv_ok or sdnn == 0):
         no_reading = "flow not computed yet (HRV not valid)"
     s = {"t": time.time() if t is None else t, "uptime_s": up, "mode": mode_s, "phase": phase, "source_line": "v2row",
@@ -314,8 +326,8 @@ def decode_v2_row(row: bytes, t: float | None = None) -> dict:
          "rr": resp / 10, "pi": pi / 100, "anom": an / 10000, "risk": rk / 10000,
          "flow": None if no_reading else fl / 10000, "flow_raw": fl / 10000, "base_hr": None, "no_reading": no_reading,
          "window": ("unavailable", "closed", "opening", "active", "fading")[window] if window < 5 else None, "flags_raw": flags,
-         "battery_mv": mv, "held": mode == 1, "asleep": bool(flags & 0x04), "poor_contact": bool(flags & 0x08),
-         "settling": False, "hrv_ok": hrv_ok, "quality": qual, "ir_dc": dcq * 8, "led": led & 0x7F,
+         "battery_mv": mv, "held": mode == 1, "asleep": asleep, "poor_contact": poor,
+         "no_reading_flag": no_flow, "settling": settling, "hrv_ok": hrv_ok, "quality": qual, "ir_dc": dcq * 8, "led": led & 0x7F,
          "rate_hz": 100 if (cfg >> 5) & 1 else 25, "flow_open5": None, "flow_end5": None}
     return s
 
@@ -338,6 +350,20 @@ class BandLinkV2:
         self._mod = None
         self._last_t = 0.0
         self._last_up = -1
+        self._worn_since_up = None    # band uptime when it last left poor-contact / sleep (None = not seen)
+
+    def _worn_s(self, row: bytes) -> float | None:
+        """Seconds since the band was last seen leaving poor contact / sleep (a put-on), from the row's
+        own uptime; None until such a transition has been seen (decode then falls back to uptime)."""
+        f = DATALOG_ROW.unpack(row[:32])
+        up, flags = f[0], f[13]
+        off = bool(flags & 0x0C)
+        if off or (self._worn_since_up is not None and up < self._worn_since_up):   # off the wrist, or rebooted
+            self._worn_since_up = -1 if off else None
+            return None
+        if self._worn_since_up == -1:
+            self._worn_since_up = up
+        return None if self._worn_since_up is None else float(up - self._worn_since_up)
 
     def _tools(self):
         if self._mod is None:
@@ -384,7 +410,7 @@ class BandLinkV2:
                             continue
                         raise
                     if len(payload) >= 32:
-                        s = decode_v2_row(payload[-32:])
+                        s = decode_v2_row(payload[-32:], worn_s=self._worn_s(payload[-32:]))
                         self._last_t = s["t"]
                         if s["uptime_s"] != self._last_up:
                             self._last_up = s["uptime_s"]

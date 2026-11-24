@@ -110,6 +110,38 @@ class TestV2Row(unittest.TestCase):
         row4 = struct.pack("<IhhhhhhHHHHBBBBHBB", 5, 840, 0, 0, 0, 0, 44, 820, 0, 5180, 3980, 0, 2, 0x80, 0, 0, 0, 0)
         self.assertIsNone(B.decode_v2_row(row4)["flow"])
 
+    @staticmethod
+    def _row(up, hr, flags):
+        import struct
+        return struct.pack("<IhhhhhhHHHHBBBBHBB", up, hr, 0, 0, 0, 0, 44, 0, 0, 0, 3900, 0, 2, flags, 0, 0, 0, 0)
+
+    def test_bit7_no_reading_and_inferred_settling(self):
+        # bit 7 on a worn band shortly after boot: no reading, inferred settling
+        s = B.decode_v2_row(self._row(120, 800, 0x80))
+        self.assertTrue(s["no_reading_flag"]); self.assertTrue(s["settling"]); self.assertIsNone(s["flow"])
+        self.assertIn("settling", s["no_reading"])
+        # the same bit hours into the day: an honest "no reading", not settling
+        s = B.decode_v2_row(self._row(5 * 3600, 800, 0x80))
+        self.assertTrue(s["no_reading_flag"]); self.assertFalse(s["settling"]); self.assertEqual(s["no_reading"], "band reports no flow reading")
+        # ... unless the caller saw the put-on recently
+        self.assertTrue(B.decode_v2_row(self._row(5 * 3600, 800, 0x80), worn_s=90)["settling"])
+        # poor contact / asleep / no heart rate: never settling
+        for flags, hr in ((0x80 | 0x08, 800), (0x80 | 0x04, 800), (0x80, 0)):
+            s = B.decode_v2_row(self._row(60, hr, flags))
+            self.assertTrue(s["no_reading_flag"]); self.assertFalse(s["settling"])
+        # bit 7 clear: neither
+        s = B.decode_v2_row(self._row(60, 800, 0x31))
+        self.assertFalse(s["no_reading_flag"]); self.assertFalse(s["settling"])
+
+    def test_link_tracks_put_on(self):
+        link = B.BandLinkV2.__new__(B.BandLinkV2)
+        link._worn_since_up = None
+        self.assertIsNone(link._worn_s(self._row(4000, 800, 0x01)))       # no put-on seen yet
+        self.assertIsNone(link._worn_s(self._row(4002, 0, 0x08)))         # off the wrist
+        self.assertEqual(link._worn_s(self._row(4004, 800, 0x80)), 0.0)  # put back on
+        self.assertEqual(link._worn_s(self._row(4064, 800, 0x80)), 60.0)
+        self.assertIsNone(link._worn_s(self._row(10, 800, 0x80)))        # rebooted: unknown again
+
     def test_find_tools_dir_v2(self):
         with tempfile.TemporaryDirectory() as d:
             root = Path(d).resolve()
