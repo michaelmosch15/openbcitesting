@@ -177,9 +177,8 @@ def preload_today(pipeline, sessions_dir: Path, match: str = "") -> None:
                     t, v = num(r.get("t")), num(r.get("flow_eeg"))
                     if t is not None and v is not None:
                         pipeline.eeg_hist.append((t, v)); n_e += 1
-                    s60 = num(r.get("flow_helmet_60s"))
-                    if s60 is None:
-                        s60 = num(r.get("flow_eeg_60s"))
+                    # the strict 60-s line only: flow_helmet_60s in 11-19 files is the exploratory live index
+                    s60 = num(r.get("flow_eeg_60s"))
                     if t is not None and hasattr(pipeline, "eeg_smooth_hist"):
                         pipeline.eeg_smooth_hist.append((t, s60 if s60 is not None else v))
             f = d / "band.csv"
@@ -204,6 +203,20 @@ def preload_today(pipeline, sessions_dir: Path, match: str = "") -> None:
             log(f"[history] skipped {d.name}: {e!r}")
     log(f"[history] restored today's earlier data: {n_e} EEG index points, {n_b} band samples, {n_m} marks")
 
+
+
+def restore_baseline(pipeline, sessions_dir: Path, match: str = "") -> Path | None:
+    """Put back today's newest frozen rest baseline (session folder baseline.json, or the day file
+    sessions/<day>_baseline.json) after a restart. Same channel labels only. Returns its path."""
+    day = time.strftime("%Y-%m-%d")
+    cands = [p for p in list(sessions_dir.glob(day + "_*/baseline.json")) + list(sessions_dir.glob(day + "_baseline.json"))
+             if not match or match in p.parent.name or p.parent == sessions_dir]
+    for p in sorted(cands, key=lambda q: q.stat().st_mtime, reverse=True):
+        if pipeline.load_baseline(p):
+            log(f"[baseline] restored the frozen rest baseline from {p}")
+            return p
+    log("[baseline] no rest baseline for today: run the protocol's rest block before trusting the helmet number")
+    return None
 
 
 def main(argv=None) -> int:
@@ -245,6 +258,7 @@ def main(argv=None) -> int:
     recorder.labels = pipeline.labels
     if not args.fresh:                       # --fresh: new wearer, do not restore earlier data to the chart
         preload_today(pipeline, HERE / "sessions", args.history_match or "")
+        restore_baseline(pipeline, HERE / "sessions", args.history_match or "")
     from server import SERVER_VERSION
     recorder.meta = {"board": board.status(), "config": cfg, "server_version": SERVER_VERSION}
 

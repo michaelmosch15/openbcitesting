@@ -214,6 +214,7 @@ canvas { display: block; width: 100%; }
 .tile-big { flex: 1; border: 1px solid var(--border); border-radius: 4px; padding: 8px 12px; background: #FAFAFA; }
 .tile-label { font-size: 11px; color: var(--ink2); text-transform: uppercase; letter-spacing: .4px; }
 .tile-num { font-size: 36px; font-weight: 600; line-height: 1.1; font-variant-numeric: tabular-nums; color: var(--ink); }
+.tile-num.tile-num-text { font-size: 20px; color: var(--ink2, var(--ink)); }
 .tile-sub { font-size: 11px; color: var(--ink2); min-height: 14px; }
 .stats-row { display: grid; grid-template-columns: repeat(7, 1fr) 1.6fr; gap: 6px; }
 .tile { border: 1px solid var(--border); border-radius: 4px; padding: 6px 8px; background: #FAFAFA; min-width: 0; }

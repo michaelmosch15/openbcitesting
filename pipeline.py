@@ -124,7 +124,7 @@ class Pipeline:
         # z vs the session until the protocol's rest block freezes a resting baseline
         self.live_base = Baseline("rest", warmup=15)
         self._recent_corr: deque = deque(maxlen=15)             # last 15 epochs of mean |corr| (reference gate)
-        self.eeg_smooth_hist: deque = deque(maxlen=20000)       # chart line: (t, live helmet flow, else 60-s median of flow_eeg)
+        self.eeg_smooth_hist: deque = deque(maxlen=20000)       # chart line: (t, 60-s median of the strict flow_eeg, or None)
         self.artifact_p2p_uv = float(fi.get("artifact_p2p_uv", 150.0))
         self.artifact_abs_uv = float(fi.get("artifact_abs_uv", 100.0))
         self.analysis_hi_hz = float(fi.get("analysis_hi_hz", 45.0))
@@ -319,7 +319,8 @@ class Pipeline:
             artifact = True                     # withheld: no index, no baseline update, no pair
             extra, rel_idx, abs_idx = None, rel, ab
         rec = self.flow.update(rel_idx, abs_idx, good_epoch, artifact=artifact, extra=extra)
-        rec = {"t": round(t_end, 3), **rec, "p2p_uv": round(p2p, 1), "n_segments_used": int(n_used),
+        rec = {"t": round(t_end, 3), **rec, "rest_block_needed": self.rest_block_needed(),
+               "p2p_uv": round(p2p, 1), "n_segments_used": int(n_used),
                "clean_channels": [self.labels[i] for i in clean_channels], "gated": ",".join(gated) or None}
         rec.update(self._live_flow(filt_long, good))
         if rec["flow_eeg"] is not None:
@@ -329,13 +330,10 @@ class Pipeline:
         recent = [v for (tt, v) in list(self.eeg_hist)[-40:] if t_end - tt <= 60.0]
         rec["flow_eeg_60s"] = round(float(np.median(recent)), 4) if recent else None
         rec["flow_eeg_60s_n"] = len(recent)
-        # helmet number shown on the chart / tile = the live index (4 Hz high-pass artifact test, clean
-        # segments pooled over 60 s; see _live_flow). Keys kept for the dashboard and epochs.csv.
-        rec["flow_helmet"] = rec.get("flow_live")
-        rec["flow_helmet_60s"] = rec.get("flow_live")
-        rec["helmet_channels"] = rec.get("live_channels")
-        line = rec.get("flow_helmet_60s")
-        self.eeg_smooth_hist.append((t_end, line if line is not None else rec["flow_eeg_60s"]))
+        # the helmet LINE is the strict index only. The live index (flow_live, _live_flow) is exploratory:
+        # shown as a labelled number when the strict one is withheld, never plotted as the helmet line.
+        # (11-19 epochs.csv files have flow_helmet / flow_helmet_60s = flow_live; those keys are gone.)
+        self.eeg_smooth_hist.append((t_end, rec["flow_eeg_60s"]))
         analysis = {
             "t": round(t_end, 3),
             "fft": {"freqs": np.round(f, 3).tolist(), "psd": [np.round(P[:, c], 5).tolist() for c in range(self.n_ch)]},
@@ -548,9 +546,54 @@ class Pipeline:
         if self.recorder is not None:
             self.recorder.trial(rec)
 
+    def rest_block_needed(self) -> bool:
+        """True while a 'rest' baseline mode has no frozen rest block yet: the numbers are then
+        z-scores against the session so far, not against the wearer's rest."""
+        b = self.flow.baselines["theta"]
+        return b.mode == "rest" and not b.frozen
+
+    # --- baseline persistence (a restart must not lose the wearer's rest block) ----------
+    def baseline_snapshot(self) -> dict:
+        return {"saved_t": round(time.time(), 3), "labels": list(self.labels), "flow": self.flow.state_dict(),
+                "live": self.live_base.to_dict(), "state": self.flow.baseline_state}
+
+    def save_baseline(self, path) -> None:
+        import json as _json
+        from pathlib import Path as _Path
+        p = _Path(path)
+        p.parent.mkdir(parents=True, exist_ok=True)
+        tmp = p.with_suffix(".tmp")
+        tmp.write_text(_json.dumps(self.baseline_snapshot(), indent=1), "utf-8")
+        tmp.replace(p)
+
+    def load_baseline(self, path) -> bool:
+        """Restore a FROZEN rest baseline saved by save_baseline (same channel labels only).
+        Returns True when it was applied."""
+        import json as _json
+        from pathlib import Path as _Path
+        try:
+            d = _json.loads(_Path(path).read_text("utf-8"))
+        except (OSError, ValueError):
+            return False
+        if list(d.get("labels") or []) != list(self.labels):
+            return False
+        fl = d.get("flow") or {}
+        if not all((fl.get(k) or {}).get("frozen") for k in ("theta", "alpha", "beta")):
+            return False
+        self.flow.load_state(fl)
+        for b in self.flow.baselines.values():
+            b.collecting = False
+        if (d.get("live") or {}).get("frozen"):
+            self.live_base.load_dict(d["live"])
+            self.live_base.collecting = False
+        self.baseline_restored_from = str(path)
+        return True
+
     def flow_status(self) -> dict:
         return {"baseline_mode": self.flow.baselines["theta"].mode, "baseline_state": self.flow.baseline_state,
                 "baseline_ready": self.flow.baseline_ready, "epochs": self.flow.n_epochs,
+                "baseline_restored_from": getattr(self, "baseline_restored_from", None),
+                "rest_block_needed": self.rest_block_needed(),
                 "artifact_epochs": self.flow.n_artifact,
                 "artifact_p2p_uv": self.artifact_p2p_uv, "artifact_abs_uv": self.artifact_abs_uv,
                 "artifact_scope": self.artifact_scope, "min_clean_channels": self.min_clean_channels,

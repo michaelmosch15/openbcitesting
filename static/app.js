@@ -803,17 +803,23 @@ const statsTiles = {
     // withheld by the readiness gate: show nothing, never a stale value (helmet off / settling / no reference)
     const shown = fe && isNum(fe.flow_eeg) ? fe.flow_eeg
       : (artifact && !fe.gated && isNum(store.lastEegFlow) ? store.lastEegFlow : null);
-    // strict index blank -> show the LIVE helmet flow (display only, never paired / reported)
+    // strict index blank -> the EXPLORATORY live helmet flow may stand in, labelled as such (display only:
+    // never plotted as the helmet line, never paired / reported)
     const live = !isNum(shown) && fe && isNum(fe.flow_live) ? fe.flow_live : null;
-    const hm = fe && isNum(fe.flow_helmet_60s) ? fe.flow_helmet_60s : null;                 // robust helmet flow, 60-s median
-    const held = !isNum(hm) && !isNum(shown) && !isNum(live) && fe && isNum(fe.flow_eeg_60s) ? fe.flow_eeg_60s : null;   // 60-s median of valid strict values
-    $('tileEeg').textContent = isNum(hm) ? hm.toFixed(2) : (isNum(shown) ? shown.toFixed(2) : (isNum(live) ? live.toFixed(2) : (isNum(held) ? held.toFixed(2) : '—')));
+    const held = !isNum(shown) && !isNum(live) && fe && isNum(fe.flow_eeg_60s) ? fe.flow_eeg_60s : null;   // 60-s median of valid strict values
+    // a 'rest' baseline mode without a frozen rest block: the index is only relative to the session so far
+    const needRest = !!(fe && fe.rest_block_needed);
+    $('tileEeg').textContent = needRest ? 'rest block needed'
+      : (isNum(shown) ? shown.toFixed(2) : (isNum(live) ? live.toFixed(2) : (isNum(held) ? held.toFixed(2) : '—')));
+    $('tileEeg').classList.toggle('tile-num-text', needRest);
     const tagHtml = artifact ? '<span class="tag warn">' + (isNum(store.lastEegFlow) ? 'artifact' : 'no index') + '</span> ' : '';
-    const segs = fe && isNum(fe.n_segments_used) ? fe.n_segments_used + '/5 clean segments' : '';
+    const segs = fe && isNum(fe.n_segments_used) ? fe.n_segments_used + ' clean segments' : '';
     const base = fe ? (fe.baseline_ready === false ? 'learning baseline…' : (isNum(fe.n_good) ? fe.n_good + ' good channels' : '')) : (store.connected ? 'no epoch yet' : '');
     const gatedTag = fe && fe.gated ? '<span class="tag bad">withheld: ' + esc(fe.gated) + '</span> ' : '';
-    const liveTag = isNum(live) ? '<span class="tag warn">live (not validated) · ' + esc(fe.live_channels || '') + '</span> ' : '';
-    $('tileEegSub').innerHTML = liveTag + (gatedTag || tagHtml) + esc([base, segs, fe && Array.isArray(fe.clean_channels) && fe.clean_channels.length ? 'clean: ' + fe.clean_channels.join(' ') : ''].filter(Boolean).join(' · '));
+    const liveTag = !needRest && isNum(live) ? '<span class="tag warn">exploratory (not validated) · ' + esc(fe.live_channels || '') + '</span> ' : '';
+    const restTag = needRest ? '<span class="tag warn">no rest baseline: run the protocol\'s rest block' +
+      (isNum(shown) ? ' · vs session ' + shown.toFixed(2) : '') + '</span> ' : '';
+    $('tileEegSub').innerHTML = restTag + liveTag + (gatedTag || tagHtml) + esc([base, segs, fe && Array.isArray(fe.clean_channels) && fe.clean_channels.length ? 'clean: ' + fe.clean_channels.join(' ') : ''].filter(Boolean).join(' · '));
     // readiness banner: why the index is (not) being scored, in operator terms
     const rd = a && a.readiness;
     const banner = $('readyBanner');
@@ -1855,7 +1861,8 @@ function onAnalysis(d) {
   // append the EEG flow point (dedupe on t)
   const fe = d.flow_eeg;
   if (fe && isNum(d.t) && d.t !== store.lastAnalysisT) {
-    store.eeg.push([d.t, isNum(fe.flow_helmet_60s) ? fe.flow_helmet_60s : (isNum(fe.flow_eeg_60s) ? fe.flow_eeg_60s : (isNum(fe.flow_eeg) ? fe.flow_eeg : null))]);
+    // the helmet line = the strict index only (60-s median of valid values); the exploratory live index is never plotted here
+    store.eeg.push([d.t, isNum(fe.flow_eeg_60s) ? fe.flow_eeg_60s : (isNum(fe.flow_eeg) ? fe.flow_eeg : null)]);
     store.lastAnalysisT = d.t;
     if (store.eeg.length % 200 === 0) trimHistory();
   }

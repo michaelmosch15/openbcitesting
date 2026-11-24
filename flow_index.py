@@ -113,6 +113,23 @@ class Baseline:
         n = len(self._roll) if self.mode == "rolling" else self._session_n
         return n >= self.warmup
 
+    def to_dict(self) -> dict:
+        """Everything needed to carry the baseline across a restart (json-safe)."""
+        return {"mode": self.mode, "window": self.window, "warmup": self.warmup, "collecting": self.collecting,
+                "frozen": self.frozen, "rest": [float(v) for v in self._rest],
+                "session": [self._session_n, self._session_sum, self._session_sq],
+                "roll": [float(v) for v in self._roll], "mean": self.mean, "std": self.std}
+
+    def load_dict(self, d: dict) -> None:
+        self.mode = str(d.get("mode", self.mode))
+        self.window, self.warmup = int(d.get("window", self.window)), int(d.get("warmup", self.warmup))
+        self.collecting, self.frozen = bool(d.get("collecting")), bool(d.get("frozen"))
+        self._rest = [float(v) for v in d.get("rest") or []]
+        n, sm, sq = (d.get("session") or [0, 0.0, 0.0])[:3]
+        self._session_n, self._session_sum, self._session_sq = int(n), float(sm), float(sq)
+        self._roll = deque((float(v) for v in d.get("roll") or []), maxlen=self.window)
+        self.mean, self.std = float(d.get("mean", 0.0)), float(d.get("std", 1.0)) or 1.0
+
     def state(self) -> str:
         if self.mode == "rest":
             return "rest-frozen" if self.frozen else ("rest-collecting" if self.collecting else "session-until-rest")
@@ -142,6 +159,14 @@ class FlowIndex:
     def end_rest(self) -> None:
         for b in self.baselines.values():
             b.end_rest()
+
+    def state_dict(self) -> dict:
+        return {k: b.to_dict() for k, b in self.baselines.items()}
+
+    def load_state(self, d: dict) -> None:
+        for k, b in self.baselines.items():
+            if k in d:
+                b.load_dict(d[k])
 
     @property
     def baseline_state(self) -> str:

@@ -90,6 +90,7 @@ class App:
             self.pipeline.flow.end_rest()
             self.pipeline.live_base.end_rest()
             self.log(f"[protocol] baseline {self.pipeline.flow.baseline_state}")
+            self.save_baseline()
         self.pipeline.on_protocol(ev)
         if hasattr(self.board, "set_condition"):            # the simulator follows the condition
             if phase == "block_start":
@@ -101,6 +102,22 @@ class App:
                 # predicts, so an unattended --sim run reaches a verdict (marked simulated)
                 threading.Timer(3.0, self._sim_rate, args=(ev.get("block_index"), ev.get("condition"))).start()
         self.broadcast("protocol", ev)
+
+    def baseline_path(self) -> Path:
+        """Where the frozen rest baseline is kept: the recording's folder, else a day file in sessions/."""
+        if getattr(self.recorder, "active", False) and getattr(self.recorder, "dir", None):
+            return Path(self.recorder.dir) / "baseline.json"
+        return self.sessions_dir / f"{time.strftime('%Y-%m-%d')}_baseline.json"
+
+    def save_baseline(self) -> None:
+        if not self.pipeline.flow.baselines["theta"].frozen:
+            return
+        try:
+            p = self.baseline_path()
+            self.pipeline.save_baseline(p)
+            self.log(f"[protocol] rest baseline saved to {p}")
+        except Exception as e:  # noqa: BLE001
+            self.log(f"[protocol] could not save the baseline: {e!r}")
 
     SIM_RATINGS = {"boredom": (2.5, 1, 0.25), "flow": (6.0, 2, 0.85), "overload": (3.0, 3, 0.30), "work": (4.5, 2, 0.55)}
 
